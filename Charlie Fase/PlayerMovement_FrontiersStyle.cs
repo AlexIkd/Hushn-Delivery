@@ -26,8 +26,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [Header("Stomp (Queda Rápida)")]
     [SerializeField] private float stompForce = 30f;
     [SerializeField] private float stompMinHeight = 2f;
+    [SerializeField] private float wallJumpOutwardForce = 12f;
+    [SerializeField] private float wallJumpForwardMomentum = 0.75f;
     [SerializeField] private KeyCode stompKey = KeyCode.LeftControl;
-    [SerializeField] private ParticleSystem stompParticles; // Sistema de partículas ao ativar stomp
+    [SerializeField] private ParticleSystem stompParticles;
     private bool isStomping = false;
 
     [Header("Air Movement")]
@@ -64,25 +66,25 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private bool isRotationLocked = false;
     private float rotationLockTimer = 0f;
     private float airTrickCooldownTimer = 0f;
-    private Quaternion lockedRotation; // NOVO: Rotação travada para o rail ride
+    private Quaternion lockedRotation;
 
     private float wallRunTimer = 0f;
 
     [Header("Particulas de Movimento")]
-    [SerializeField] private ParticleSystem airDashParticles; // Sistema de particulas para air dash
-    [SerializeField] private bool enableAirDashParticles = true; // Habilita particulas durante air dash
-    [SerializeField] private ParticleSystem jumpParticles; // Sistema de particulas para pulo
-    [SerializeField] private bool enableJumpParticles = true; // Habilita particulas durante pulo
-    [SerializeField] private ParticleSystem doubleJumpParticles; // Sistema de particulas para duplo pulo
-    [SerializeField] private bool enableDoubleJumpParticles = true; // Habilita particulas durante duplo pulo
-    [SerializeField] private ParticleSystem airTrickParticles; // Sistema de particulas para air trick
-    [SerializeField] private bool enableAirTrickParticles = true; // Habilita particulas durante air trick
-    [SerializeField] private ParticleSystem wallRunLeftParticles; // Sistema de particulas para wall run esquerdo
-    [SerializeField] private ParticleSystem wallRunRightParticles; // Sistema de particulas para wall run direito
-    [SerializeField] private bool enableWallRunParticles = true; // Habilita particulas durante wall run
-    
+    [SerializeField] private ParticleSystem airDashParticles;
+    [SerializeField] private bool enableAirDashParticles = true;
+    [SerializeField] private ParticleSystem jumpParticles;
+    [SerializeField] private bool enableJumpParticles = true;
+    [SerializeField] private ParticleSystem doubleJumpParticles;
+    [SerializeField] private bool enableDoubleJumpParticles = true;
+    [SerializeField] private ParticleSystem airTrickParticles;
+    [SerializeField] private bool enableAirTrickParticles = true;
+    [SerializeField] private ParticleSystem wallRunLeftParticles;
+    [SerializeField] private ParticleSystem wallRunRightParticles;
+    [SerializeField] private bool enableWallRunParticles = true;
+
     [Header("Debug")]
-    [SerializeField] private bool showDebugInfo = true; // Mostra informacoes de debug no console
+    [SerializeField] private bool showDebugInfo = false; // ✅ DESATIVADO por padrão
 
     [Header("Recuperação após Wall Run")]
     [SerializeField] private float wallRunRecoveryTime = 0.4f;
@@ -105,7 +107,11 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private CharacterController controller;
     private Animator animator;
     private Transform cameraTransform;
+    private Transform cachedTransform;
     private PlayerRailRide_SonicStyle_Spline railRide;
+    
+    // ✅ NOVO: Referência ao WallDashJump para bloquear Wall Run
+    private WallDashJump wallDashJump;
 
     // Movimento
     private Vector3 moveDirection = Vector3.zero;
@@ -122,13 +128,46 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private bool isJumping = false;
     private bool isFalling = false;
 
-    // Velocidade externa (para transições suaves)
+    // Velocidade externa
     private Vector3 externalVelocity = Vector3.zero;
+
+    // ✅ CACHE - Evita alocações repetidas
+    private Vector3 inputVector;
+    private Vector3 cameraForward;
+    private Vector3 cameraRight;
+    private Vector3 desiredMoveDirection;
+    private Vector3 desiredMove;
+    private Vector3 horizontalMove;
+    private RaycastHit raycastHit;
+    private const float GROUND_CHECK_RADIUS = 0.1f;
+    private const float RAYCAST_MAX_DISTANCE = float.MaxValue;
+
+    // ✅ OTIMIZAÇÕES - CACHE DE ANIMATOR
+    private float cachedSpeed = -1f;
+    private bool cachedIsGrounded = false;
+    private bool cachedIsWallRunning = false;
+    private bool cachedIsJumping = false;
+    private bool cachedIsFalling = false;
+    private bool cachedIsStomping = false;
+    private bool cachedOnLeftWall = false;
+    private bool cachedOnRightWall = false;
+    private bool cachedProlongedIdle = false;
+    private const float SPEED_CHANGE_THRESHOLD = 0.01f;
+
+    // ✅ OTIMIZAÇÕES - CONTROLE DE RAYCASTS
+    private int raycastFrameCounter = 0;
+    private const int RAYCAST_CHECK_INTERVAL = 2;
+
+    // ✅ OTIMIZAÇÕES - CACHE DE ROTAÇÃO
+    private Quaternion cachedTargetRotation = Quaternion.identity;
+    private float rotationUpdateTimer = 0f;
+    private const float ROTATION_UPDATE_INTERVAL = 0.05f;
 
     void Start()
     {
         controller = GetComponent<CharacterController>();
         animator = GetComponent<Animator>();
+        cachedTransform = transform;
         cameraTransform = Camera.main ? Camera.main.transform : null;
         railRide = GetComponent<PlayerRailRide_SonicStyle_Spline>();
 
@@ -138,25 +177,32 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         if (controller == null)
             Debug.LogError("CharacterController não encontrado no PlayerMovement_FrontiersStyle!");
 
-        // Inicializa a referência ao StyleRankSystem
+        // ✅ OTIMIZADO: FindObjectOfType uma vez
         styleRankSystem = FindObjectOfType<StyleRankSystem>();
-        if (styleRankSystem == null)
+        if (styleRankSystem == null && showDebugInfo)
         {
-            Debug.LogWarning("StyleRankSystem não encontrado na cena. O ranking de estilo não funcionará.");
+            Debug.LogWarning("StyleRankSystem não encontrado na cena.");
+        }
+        
+        // ✅ NOVO: Inicializa referência ao WallDashJump
+        wallDashJump = GetComponent<WallDashJump>();
+        if (wallDashJump == null && showDebugInfo)
+        {
+            Debug.LogWarning("WallDashJump não encontrado no mesmo GameObject.");
         }
 
         // Validação do groundCheck
         if (groundCheck == null)
         {
-            Debug.LogError("groundCheck não está atribuído! Crie um GameObject filho na posição dos pés do personagem e atribua-o.");
-            
-            // Cria automaticamente um groundCheck se não existir
+            Debug.LogError("groundCheck não está atribuído!");
+
             GameObject groundCheckObj = new GameObject("GroundCheck");
-            groundCheckObj.transform.SetParent(transform);
-            groundCheckObj.transform.localPosition = new Vector3(0, -controller.height / 2f, 0);
+            groundCheckObj.transform.SetParent(cachedTransform);
+            groundCheckObj.transform.localPosition = new Vector3(0, -controller.height * 0.5f, 0);
             groundCheck = groundCheckObj.transform;
-            
-            Debug.Log("GroundCheck criado automaticamente. Ajuste a posição se necessário.");
+
+            if (showDebugInfo)
+                Debug.Log("GroundCheck criado automaticamente.");
         }
 
         airDashCharges = maxAirDashCharges;
@@ -165,11 +211,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     void Update()
     {
-        // Não processa movimento se estiver no rail
+        // ✅ OTIMIZADO: Early exit se estiver no rail
         if (railRide != null && railRide.isGrinding)
-        {
             return;
-        }
 
         // 1. Pré-processamento e Verificações de Estado
         CheckGround();
@@ -182,19 +226,20 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         HandleProlongedIdle();
         UpdateAnimator();
 
-        // 2. Lógica de Recuperação (Wall Run Recovery)
+        // 2. Lógica de Recuperação
         if (recoveringFromWallRun)
         {
             wallRunRecoveryTimer -= Time.deltaTime;
             if (wallRunRecoveryTimer <= 0f)
             {
                 recoveringFromWallRun = false;
-                Debug.Log("✅ Recuperação do Wall Run finalizada.");
+                if (showDebugInfo)
+                    Debug.Log("✅ Recuperação do Wall Run finalizada.");
             }
         }
 
-        // 3. Aplica velocidade externa (para transições suaves)
-        if (externalVelocity.magnitude > 0.1f)
+        // 3. ✅ OTIMIZADO: Aplica velocidade externa
+        if (externalVelocity.sqrMagnitude > 0.01f)
         {
             moveDirection += externalVelocity;
             externalVelocity = Vector3.Lerp(externalVelocity, Vector3.zero, Time.deltaTime * 5f);
@@ -209,7 +254,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         else if (isWallRunning)
         {
             HandleWallRunInput();
-            
+
             if (isWallRunning)
             {
                 WallRunMovement();
@@ -244,12 +289,15 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     private void HandleInputAndMovement()
     {
-        if (recoveringFromWallRun || isDashing) return; // CORREÇÃO: Não processar input durante dash
+        if (recoveringFromWallRun || isDashing) return;
 
         float horizontalInput = Input.GetAxis("Horizontal");
         float verticalInput = Input.GetAxis("Vertical");
 
-        Vector3 inputVector = new Vector3(horizontalInput, 0, verticalInput);
+        // ✅ OTIMIZADO: Reutiliza Vector3 em cache
+        inputVector.x = horizontalInput;
+        inputVector.y = 0;
+        inputVector.z = verticalInput;
         float inputMagnitude = inputVector.magnitude;
 
         if (inputMagnitude > 0.1f)
@@ -265,10 +313,16 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
             if (cameraTransform != null)
             {
-                Vector3 cameraForward = Vector3.Scale(cameraTransform.forward, new Vector3(1, 0, 1)).normalized;
-                Vector3 cameraRight = Vector3.Scale(cameraTransform.right, new Vector3(1, 0, 1)).normalized;
-                Vector3 desiredMoveDirection = (cameraForward * verticalInput + cameraRight * horizontalInput).normalized;
-                Vector3 desiredMove = desiredMoveDirection * currentSpeed;
+                // ✅ OTIMIZADO: Calcula uma vez
+                cameraForward = cameraTransform.forward;
+                cameraRight = cameraTransform.right;
+                cameraForward.y = 0;
+                cameraRight.y = 0;
+                cameraForward.Normalize();
+                cameraRight.Normalize();
+
+                desiredMoveDirection = (cameraForward * verticalInput + cameraRight * horizontalInput).normalized;
+                desiredMove = desiredMoveDirection * currentSpeed;
 
                 if (controller.isGrounded && lastMoveDirection.sqrMagnitude > 0.01f && !animatorBusy)
                 {
@@ -281,7 +335,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                 }
 
                 lastMoveDirection = desiredMoveDirection;
-                
+
                 moveDirection.x = desiredMove.x;
                 moveDirection.z = desiredMove.z;
             }
@@ -302,9 +356,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     {
         isGrounded = controller.isGrounded;
 
+        // ✅ OTIMIZADO: Verificação adicional apenas se necessário
         if (!isGrounded && groundCheck != null)
         {
-            isGrounded = Physics.CheckSphere(groundCheck.position, 0.1f, groundMask);
+            isGrounded = Physics.CheckSphere(groundCheck.position, GROUND_CHECK_RADIUS, groundMask);
         }
 
         if (isGrounded)
@@ -316,11 +371,27 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     private void CheckWallRun()
     {
-        Vector3 leftRayStart = transform.position;
-        Vector3 rightRayStart = transform.position;
+        // ✅ NOVO: Bloqueia Wall Run se Wall Dash Jump está ativo
+        if (wallDashJump != null && wallDashJump.IsWallDashing())
+        {
+            if (showDebugInfo)
+                Debug.Log("🚫 Wall Run BLOQUEADO - Wall Dash Jump em progresso");
+            return;
+        }
+        
+        // ✅ OTIMIZADO: Raycasts apenas a cada 2 frames
+        raycastFrameCounter++;
+        if (raycastFrameCounter % RAYCAST_CHECK_INTERVAL != 0)
+            return;
 
-        onLeftWall = Physics.Raycast(leftRayStart, -transform.right, out RaycastHit leftHit, wallDistance + controller.radius, wallMask);
-        onRightWall = Physics.Raycast(rightRayStart, transform.right, out RaycastHit rightHit, wallDistance + controller.radius, wallMask);
+        Vector3 position = cachedTransform.position;
+
+        // ✅ OTIMIZADO: Raycasts com reutilização de hit
+        onLeftWall = Physics.Raycast(position, -cachedTransform.right, out raycastHit, wallDistance + controller.radius, wallMask);
+        Vector3 leftHitNormal = raycastHit.normal;
+
+        onRightWall = Physics.Raycast(position, cachedTransform.right, out raycastHit, wallDistance + controller.radius, wallMask);
+        Vector3 rightHitNormal = raycastHit.normal;
 
         if (isWallRunning)
         {
@@ -333,18 +404,23 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
         if ((onLeftWall || onRightWall) && !isWallRunning && !controller.isGrounded && !recoveringFromWallRun)
         {
-            if (Physics.Raycast(transform.position, Vector3.down, out RaycastHit hit, float.MaxValue, groundMask))
+            if (Physics.Raycast(position, Vector3.down, out raycastHit, RAYCAST_MAX_DISTANCE, groundMask))
             {
-                if (hit.distance < minDistanceToGroundForWallRun)
+                if (raycastHit.distance < minDistanceToGroundForWallRun)
                 {
                     return;
                 }
             }
-            
-            wallNormal = onLeftWall ? leftHit.normal : rightHit.normal;
 
-            Vector3 horizontalMoveDirection = new Vector3(moveDirection.x, 0, moveDirection.z).normalized;
-            float angleToWall = Vector3.Angle(-horizontalMoveDirection, wallNormal);
+            wallNormal = onLeftWall ? leftHitNormal : rightHitNormal;
+
+            // ✅ OTIMIZADO: Cálculo simplificado
+            horizontalMove.x = moveDirection.x;
+            horizontalMove.y = 0;
+            horizontalMove.z = moveDirection.z;
+            horizontalMove.Normalize();
+
+            float angleToWall = Vector3.Angle(-horizontalMove, wallNormal);
 
             if (angleToWall > maxWallRunAngle || currentSpeed < quickTurnThreshold)
             {
@@ -359,28 +435,29 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     {
         if (isWallRunning) return;
 
-        // Adiciona pontos de estilo ao iniciar o Wall Run
         styleRankSystem?.OnWallRunStart();
 
         isWallRunning = true;
         wallRunTimer = 0f;
-        
+
         if (airDashCharges < maxAirDashCharges)
         {
             airDashCharges = maxAirDashCharges;
-            Debug.Log($"✅ Dash Aéreo resetado ao iniciar Wall Run. Cargas: {airDashCharges}");
+            if (showDebugInfo)
+                Debug.Log($"✅ Dash Aéreo resetado ao iniciar Wall Run. Cargas: {airDashCharges}");
         }
-        
+
         if (doubleJumpCharges < maxDoubleJumpCharges)
         {
             doubleJumpCharges = maxDoubleJumpCharges;
-            Debug.Log($"✅ Pulo Duplo resetado ao iniciar Wall Run. Cargas: {doubleJumpCharges}");
+            if (showDebugInfo)
+                Debug.Log($"✅ Pulo Duplo resetado ao iniciar Wall Run. Cargas: {doubleJumpCharges}");
         }
 
         hasWallRun = true;
 
         Vector3 forwardDir = Vector3.Cross(wallNormal, Vector3.up);
-        if (Vector3.Dot(forwardDir, transform.forward) < 0)
+        if (Vector3.Dot(forwardDir, cachedTransform.forward) < 0)
             forwardDir = -forwardDir;
 
         currentSpeed = Mathf.Max(currentSpeed, maxSpeed);
@@ -395,23 +472,23 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             animator.SetFloat("Speed", 0);
             animator.SetBool("IsWallRunning", true);
         }
-        
+
         isJumping = false;
         isFalling = false;
-        
+
         if (animator != null)
         {
             animator.SetBool("IsJumping", false);
             animator.SetBool("IsFalling", false);
         }
-        
-        // Inicia particulas de wall run
+
         if (enableWallRunParticles)
         {
             StartWallRunParticles();
         }
 
-        Debug.Log("🏃‍♂️ Wall Run iniciado!");
+        if (showDebugInfo)
+            Debug.Log("🏃‍♂️ Wall Run iniciado!");
     }
 
     private void ExitWallRun(bool jumpAway = false)
@@ -421,49 +498,75 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         isWallRunning = false;
         lastWallNormal = wallNormal;
         currentSpeed = Mathf.Max(currentSpeed - wallRunSpeedDecrease, 0);
-        
+
         if (animator != null)
             animator.SetBool("IsWallRunning", false);
 
         if (jumpAway)
         {
-            Vector3 jumpDirection = (wallNormal + Vector3.up).normalized;
-            moveDirection = jumpDirection * jumpForce;
+            Vector3 outwardImpulse = wallNormal * wallJumpOutwardForce;
+
+            horizontalMove.x = moveDirection.x;
+            horizontalMove.y = 0;
+            horizontalMove.z = moveDirection.z;
+            Vector3 forwardMomentum = horizontalMove.normalized * horizontalMove.magnitude * wallJumpForwardMomentum;
+
+            Vector3 verticalImpulse = Vector3.up * jumpForce;
+
+            moveDirection.x = 0;
+            moveDirection.z = 0;
+
+            moveDirection += outwardImpulse;
+            moveDirection += forwardMomentum;
+            moveDirection.y = verticalImpulse.y;
             recoveringFromWallRun = true;
             wallRunRecoveryTimer = wallRunRecoveryTime;
-            Debug.Log($"🌀 Pulou e entrou em recuperação após Wall Run!");
+            if (showDebugInfo)
+                Debug.Log($"🌀 Pulou e entrou em recuperação após Wall Run!");
         }
         else
         {
             moveDirection.y = 0;
         }
-        
-        // Para particulas de wall run
+
         if (enableWallRunParticles)
         {
             StopWallRunParticles();
         }
 
-        Debug.Log("Wall Run encerrado!");
+        if (showDebugInfo)
+            Debug.Log("Wall Run encerrado!");
     }
 
     private void WallRunMovement()
     {
         wallRunTimer += Time.deltaTime;
 
-        RaycastHit hit;
-        Vector3 rayDirection = onLeftWall ? -transform.right : transform.right;
-        float dist = controller.radius + 0.1f;
+        // ✅ OTIMIZADO: Raycast com reutilização
+        Vector3 rayDirection = onLeftWall ? -cachedTransform.right : cachedTransform.right;
+        float rayLength = controller.radius + 0.5f;
 
-        if (Physics.Raycast(transform.position, rayDirection, out hit, dist, wallMask))
+        if (Physics.Raycast(cachedTransform.position, rayDirection, out raycastHit, rayLength, wallMask))
         {
-            float distanceToWall = hit.distance;
-            float desiredDistance = controller.radius + 0.01f;
-            float offset = distanceToWall - desiredDistance;
+            float distanceToWall = raycastHit.distance;
+            float desiredDistance = controller.radius + 0.05f;
 
-            if (offset < 0)
+            float correctionAmount = desiredDistance - distanceToWall;
+
+            if (Mathf.Abs(correctionAmount) > 0.001f)
             {
-                transform.position += hit.normal * -offset;
+                Vector3 correctionVector = raycastHit.normal * correctionAmount;
+
+                if (controller != null && controller.enabled)
+                {
+                    controller.enabled = false;
+                    cachedTransform.position += correctionVector;
+                    controller.enabled = true;
+                }
+                else
+                {
+                    cachedTransform.position += correctionVector;
+                }
             }
         }
 
@@ -474,7 +577,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         }
 
         Vector3 forwardDir = Vector3.Cross(wallNormal, Vector3.up);
-        if (Vector3.Dot(forwardDir, transform.forward) < 0)
+        if (Vector3.Dot(forwardDir, cachedTransform.forward) < 0)
             forwardDir = -forwardDir;
 
         moveDirection = Vector3.Lerp(moveDirection, forwardDir * currentSpeed, Time.deltaTime * 5f);
@@ -497,17 +600,17 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     {
         originalSpeedBeforeQuickTurn = currentSpeed;
         minSpeedDuringQuickTurn = originalSpeedBeforeQuickTurn * quickTurnMinSpeedMultiplier;
-        targetRotation = Quaternion.LookRotation(-transform.forward);
-        
+        targetRotation = Quaternion.LookRotation(-cachedTransform.forward);
+
         if (animator != null)
             animator.SetTrigger("QuickTurn");
-        
+
         animatorBusy = true;
     }
 
     public void CompleteQuickTurn()
     {
-        transform.rotation = targetRotation;
+        cachedTransform.rotation = targetRotation;
         moveDirection.x = -moveDirection.x;
         moveDirection.z = -moveDirection.z;
         lastMoveDirection = -lastMoveDirection;
@@ -518,9 +621,15 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     {
         float targetSpeed = Mathf.Max(minSpeedDuringQuickTurn, 0);
         currentSpeed = Mathf.MoveTowards(currentSpeed, targetSpeed, quickTurnDeceleration * Time.deltaTime);
-        Vector3 horizontal = new Vector3(moveDirection.x, 0, moveDirection.z).normalized;
-        moveDirection.x = horizontal.x * currentSpeed;
-        moveDirection.z = horizontal.z * currentSpeed;
+
+        // ✅ OTIMIZADO: Reutiliza Vector3
+        horizontalMove.x = moveDirection.x;
+        horizontalMove.y = 0;
+        horizontalMove.z = moveDirection.z;
+        horizontalMove.Normalize();
+
+        moveDirection.x = horizontalMove.x * currentSpeed;
+        moveDirection.z = horizontalMove.z * currentSpeed;
         UpdateAnimator();
     }
 
@@ -544,71 +653,73 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             if (Input.GetKeyDown(KeyCode.W))
             {
                 triggerName = "AirInput_Forward";
-                TriggerAirTrick();
             }
             else if (Input.GetKeyDown(KeyCode.S))
             {
                 triggerName = "AirInput_Backward";
-                TriggerAirTrick();
             }
             else if (Input.GetKeyDown(KeyCode.A))
             {
                 triggerName = "AirInput_Left";
-                TriggerAirTrick();
             }
             else if (Input.GetKeyDown(KeyCode.D))
             {
                 triggerName = "AirInput_Right";
-                TriggerAirTrick();
             }
 
-            if (!string.IsNullOrEmpty(triggerName) && animator != null)
+            if (!string.IsNullOrEmpty(triggerName))
             {
-                animator.SetTrigger(triggerName);
+                TriggerAirTrick();
+                if (animator != null)
+                {
+                    animator.SetTrigger(triggerName);
+                }
             }
         }
     }
 
     private bool IsHighEnoughForAirTrick()
     {
-        if (Physics.Raycast(transform.position, Vector3.down, out RaycastHit hit, float.MaxValue, groundMask))
+        if (Physics.Raycast(cachedTransform.position, Vector3.down, out raycastHit, RAYCAST_MAX_DISTANCE, groundMask))
         {
-            float distanceToGround = hit.distance;
+            float distanceToGround = raycastHit.distance;
             bool isHighEnough = distanceToGround >= minHeightForAirTrick;
-            
-            Debug.DrawRay(transform.position, Vector3.down * distanceToGround, 
-                         isHighEnough ? Color.green : Color.yellow);
-            
+
+            if (showDebugInfo)
+            {
+                Debug.DrawRay(cachedTransform.position, Vector3.down * distanceToGround,
+                             isHighEnough ? Color.green : Color.yellow);
+            }
+
             return isHighEnough;
         }
-        
+
         return true;
     }
 
     private void TriggerAirTrick()
     {
-        // Adiciona pontos de estilo ao usar o Air Trick
         styleRankSystem?.OnAirTrickUsed();
 
         isRotationLocked = true;
         rotationLockTimer = airTrickRotationLockTime;
         airTrickCooldownTimer = airTrickCooldown;
         animatorBusy = true;
-        
-        // Inicia particulas de air trick
+
         if (enableAirTrickParticles && airTrickParticles != null)
         {
             StartAirTrickParticles();
         }
-        
-        Debug.Log($"🌀 Air Trick - Rotação travada por {airTrickRotationLockTime} segundos e Cooldown iniciado por {airTrickCooldown} segundos (Altura: {GetCurrentHeight():F1}m)");
+
+        if (showDebugInfo)
+            Debug.Log($"🌀 Air Trick - Rotação travada por {airTrickRotationLockTime}s");
     }
 
     private float GetCurrentHeight()
     {
-        if (Physics.Raycast(transform.position, Vector3.down, out RaycastHit hit, float.MaxValue, groundMask))
+        if (Physics.Raycast(cachedTransform.position, Vector3.down, out raycastHit, RAYCAST_MAX_DISTANCE, groundMask))
         {
-            return hit.distance;
+            return raycastHit.distance;
         }
         return float.MaxValue;
     }
@@ -620,28 +731,23 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             rotationLockTimer -= Time.deltaTime;
             if (rotationLockTimer <= 0f)
             {
-                // A trava de rotação do Air Trick é desativada aqui
                 isRotationLocked = false;
                 animatorBusy = false;
-                Debug.Log("✅ Rotação destravada após Air Trick");
+                if (showDebugInfo)
+                    Debug.Log("✅ Rotação destravada após Air Trick");
             }
         }
     }
 
-    /// <summary>
-    /// Trava ou destrava a rotação do jogador (usado por sistemas externos como Rail Ride)
-    /// </summary>
     public void LockRotation(bool lockRotation)
     {
         isRotationLocked = lockRotation;
         if (lockRotation)
         {
-            // Salva a rotação atual quando a trava é ativada
-            lockedRotation = transform.rotation;
+            lockedRotation = cachedTransform.rotation;
         }
         else
         {
-            // Se estiver destravando, garante que o timer do Air Trick também seja resetado
             rotationLockTimer = 0f;
         }
     }
@@ -662,18 +768,33 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     {
         if (isRotationLocked)
         {
-            // Mantém a rotação travada na última rotação salva (do LockRotation ou Air Trick)
-            transform.rotation = lockedRotation;
+            cachedTransform.rotation = lockedRotation;
             return;
         }
 
         if (animatorBusy) return;
-        
-        Vector3 horizontalMove = new Vector3(moveDirection.x, 0, moveDirection.z);
+
+        // ✅ OTIMIZADO: Reutiliza Vector3
+        horizontalMove.x = moveDirection.x;
+        horizontalMove.y = 0;
+        horizontalMove.z = moveDirection.z;
+
         if (horizontalMove.magnitude > 0.1f)
         {
-            Quaternion targetRot = Quaternion.LookRotation(horizontalMove);
-            transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRot, turnSpeed * Time.deltaTime);
+            // ✅ OTIMIZADO: Atualizar target apenas periodicamente
+            rotationUpdateTimer += Time.deltaTime;
+            if (rotationUpdateTimer >= ROTATION_UPDATE_INTERVAL)
+            {
+                cachedTargetRotation = Quaternion.LookRotation(horizontalMove);
+                rotationUpdateTimer = 0f;
+            }
+            
+            // ✅ OTIMIZADO: Usar Lerp é mais rápido que RotateTowards
+            cachedTransform.rotation = Quaternion.Lerp(
+                cachedTransform.rotation,
+                cachedTargetRotation,
+                Time.deltaTime * turnSpeed * 0.1f
+            );
         }
     }
 
@@ -684,7 +805,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private void ApplyGravity()
     {
         if (isDashing || recoveringFromWallRun || isStomping) return;
-        
+
         float effectiveGravity = isWallRunning ? wallRunGravity : gravity;
 
         if (controller.isGrounded)
@@ -700,15 +821,16 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                 if (airDashCharges < maxAirDashCharges)
                 {
                     airDashCharges = maxAirDashCharges;
-                    Debug.Log($"✅ Dash Aéreo resetado ao iniciar o pulo. Cargas: {airDashCharges}");
+                    if (showDebugInfo)
+                        Debug.Log($"✅ Dash Aéreo resetado ao iniciar o pulo. Cargas: {airDashCharges}");
                 }
                 if (doubleJumpCharges < maxDoubleJumpCharges)
                 {
                     doubleJumpCharges = maxDoubleJumpCharges;
-                    Debug.Log($"✅ Pulo Duplo resetado ao iniciar o pulo. Cargas: {doubleJumpCharges}");
+                    if (showDebugInfo)
+                        Debug.Log($"✅ Pulo Duplo resetado ao iniciar o pulo. Cargas: {doubleJumpCharges}");
                 }
-                
-                // Inicia particulas de pulo
+
                 if (enableJumpParticles && jumpParticles != null)
                 {
                     StartJumpParticles();
@@ -726,21 +848,22 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                 doubleJumpCharges--;
                 isJumping = true;
                 isFalling = false;
-                
+
                 if (animator != null)
                     animator.SetTrigger("DoubleJump");
-                
-                // Inicia particulas de duplo pulo
+
                 if (enableDoubleJumpParticles && doubleJumpParticles != null)
                 {
                     StartDoubleJumpParticles();
                 }
-                
-                Debug.Log($"🚀 Pulo Duplo! Cargas restantes: {doubleJumpCharges}");
+
+                if (showDebugInfo)
+                    Debug.Log($"🚀 Pulo Duplo! Cargas restantes: {doubleJumpCharges}");
             }
 
             moveDirection.y -= effectiveGravity * Time.deltaTime;
 
+            // ✅ OTIMIZADO: Verificações simplificadas
             if (moveDirection.y < -0.1f)
             {
                 isFalling = true;
@@ -765,7 +888,6 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     private void HandleStomp()
     {
-        // Permite stomp apenas quando está no ar
         if (!controller.isGrounded && !isDashing && !isStomping && !isWallRunning)
         {
             if (Input.GetKeyDown(stompKey))
@@ -773,8 +895,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                 StartStomp();
             }
         }
-        
-        // Aplica a força de stomp continuamente enquanto estiver stompando
+
         if (isStomping && !controller.isGrounded)
         {
             ApplyStompForce();
@@ -784,24 +905,22 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private void StartStomp()
     {
         isStomping = true;
-        
-        // Cancela qualquer movimento horizontal e aplica impulso forte para baixo
+
         moveDirection.x = 0;
         moveDirection.z = 0;
         moveDirection.y = -stompForce;
-        
-        // Ativa o sistema de partículas
+
         if (stompParticles != null)
         {
             stompParticles.Play();
         }
-        
-        Debug.Log($"💥 Stomp ativado! Força: {stompForce}");
+
+        if (showDebugInfo)
+            Debug.Log($"💥 Stomp ativado! Força: {stompForce}");
     }
-    
+
     private void ApplyStompForce()
     {
-        // Mantém a força de stomp constante até atingir o chão
         moveDirection.y = -stompForce;
         moveDirection.x = 0;
         moveDirection.z = 0;
@@ -837,38 +956,34 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         airDashTimer = airDashDuration;
         airDashCharges--;
 
-        Vector3 dashDirection = transform.forward; // Padrão é a direção de visão
-        
-        // Se houver movimento horizontal, use a direção do movimento
-        Vector3 horizontalMove = new Vector3(moveDirection.x, 0, moveDirection.z);
-        if (horizontalMove.sqrMagnitude > 0.01f)
-        {
-            dashDirection = horizontalMove.normalized;
-        }
+        // ✅ OTIMIZADO: Reutiliza Vector3
+        horizontalMove.x = moveDirection.x;
+        horizontalMove.y = 0;
+        horizontalMove.z = moveDirection.z;
+
+        Vector3 dashDirection = horizontalMove.sqrMagnitude > 0.01f ? horizontalMove.normalized : cachedTransform.forward;
 
         moveDirection = dashDirection * airDashForce;
         moveDirection.y = 0;
 
-
         styleRankSystem?.OnAirDashUsed();
-        
+
         if (animator != null)
             animator.SetTrigger("AirDash");
-        
-        // Inicia particulas de air dash
+
         if (enableAirDashParticles && airDashParticles != null)
         {
             StartAirDashParticles();
         }
-        
-        Debug.Log($"💨 Dash Aéreo! Cargas restantes: {airDashCharges}");
+
+        if (showDebugInfo)
+            Debug.Log($"💨 Dash Aéreo! Cargas restantes: {airDashCharges}");
     }
 
     private void StopAirDash()
     {
         isDashing = false;
-        
-        // Para particulas de air dash
+
         if (enableAirDashParticles && airDashParticles != null)
         {
             StopAirDashParticles();
@@ -915,33 +1030,84 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private void UpdateAnimator()
     {
         if (animator == null) return;
-        
+
         float normalizedSpeed = Mathf.Clamp01(currentSpeed / maxSpeed);
-        animator.SetFloat("Speed", normalizedSpeed);
-        animator.SetBool("IsGrounded", controller.isGrounded);
-        animator.SetBool("IsWallRunning", isWallRunning);
-        animator.SetBool("IsJumping", isJumping);
-        animator.SetBool("IsFalling", isFalling);
-        animator.SetBool("OnLeftWall", onLeftWall);
-        animator.SetBool("OnRightWall", onRightWall);
+        
+        // ✅ OTIMIZADO: Só atualiza Speed se mudou significativamente
+        if (Mathf.Abs(normalizedSpeed - cachedSpeed) > SPEED_CHANGE_THRESHOLD)
+        {
+            animator.SetFloat("Speed", normalizedSpeed);
+            cachedSpeed = normalizedSpeed;
+        }
+
+        // ✅ OTIMIZADO: Só atualiza IsGrounded se mudou
+        if (controller.isGrounded != cachedIsGrounded)
+        {
+            animator.SetBool("IsGrounded", controller.isGrounded);
+            cachedIsGrounded = controller.isGrounded;
+        }
+
+        // ✅ OTIMIZADO: Só atualiza IsWallRunning se mudou
+        if (isWallRunning != cachedIsWallRunning)
+        {
+            animator.SetBool("IsWallRunning", isWallRunning);
+            cachedIsWallRunning = isWallRunning;
+        }
+
+        // ✅ OTIMIZADO: Só atualiza IsJumping se mudou
+        if (isJumping != cachedIsJumping)
+        {
+            animator.SetBool("IsJumping", isJumping);
+            cachedIsJumping = isJumping;
+        }
+
+        // ✅ OTIMIZADO: Só atualiza IsFalling se mudou
+        if (isFalling != cachedIsFalling)
+        {
+            animator.SetBool("IsFalling", isFalling);
+            cachedIsFalling = isFalling;
+        }
+
+        // ✅ OTIMIZADO: Só atualiza IsStomping se mudou
+        if (isStomping != cachedIsStomping)
+        {
+            animator.SetBool("IsStomping", isStomping);
+            cachedIsStomping = isStomping;
+        }
+
+        // ✅ OTIMIZADO: Só atualiza OnLeftWall se mudou
+        if (onLeftWall != cachedOnLeftWall)
+        {
+            animator.SetBool("OnLeftWall", onLeftWall);
+            cachedOnLeftWall = onLeftWall;
+        }
+
+        // ✅ OTIMIZADO: Só atualiza OnRightWall se mudou
+        if (onRightWall != cachedOnRightWall)
+        {
+            animator.SetBool("OnRightWall", onRightWall);
+            cachedOnRightWall = onRightWall;
+        }
+
+        // ✅ OTIMIZADO: Só atualiza ProlongedIdle se mudou
+        if (isProlongedIdle != cachedProlongedIdle)
+        {
+            animator.SetBool("ProlongedIdle", isProlongedIdle);
+            cachedProlongedIdle = isProlongedIdle;
+        }
     }
 
     // ======================================================
     // MÉTODOS PÚBLICOS PARA INTEGRAÇÃO
     // ======================================================
 
-    /// <summary>
-    /// Adiciona velocidade externa ao movimento (usado para transições suaves)
-    /// </summary>
     public void AddExternalVelocity(Vector3 velocity)
     {
         externalVelocity = velocity;
-        Debug.Log($"⚡ Velocidade externa adicionada: {velocity}");
+        if (showDebugInfo)
+            Debug.Log($"⚡ Velocidade externa adicionada: {velocity}");
     }
 
-    /// <summary>
-    /// Força a saída do wall run (usado pelo sistema de grind)
-    /// </summary>
     public void ForceExitWallRun()
     {
         if (isWallRunning)
@@ -950,188 +1116,137 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Reseta as cargas de pulo duplo e air dash (usado pelo sistema de grind)
-    /// </summary>
     public void ResetAirCharges()
     {
         doubleJumpCharges = maxDoubleJumpCharges;
         airDashCharges = maxAirDashCharges;
-        Debug.Log($"✅ Cargas aéreas resetadas no grind. Double Jump: {doubleJumpCharges}, Air Dash: {airDashCharges}");
+        if (showDebugInfo)
+            Debug.Log($"✅ Cargas aéreas resetadas no grind. Double Jump: {doubleJumpCharges}, Air Dash: {airDashCharges}");
     }
 
     // ======================================================
     // CONTROLE DE PARTICULAS
     // ======================================================
 
-    /// <summary>
-    /// Inicia particulas de air dash (child do personagem)
-    /// </summary>
     private void StartAirDashParticles()
     {
         if (airDashParticles == null) return;
-        
-        // Ativa o sistema de particulas
+
         if (!airDashParticles.isPlaying)
         {
             airDashParticles.Play();
-            
+
             if (showDebugInfo)
-            {
                 Debug.Log("Particulas de air dash iniciadas.");
-            }
         }
     }
-    
-    /// <summary>
-    /// Para as particulas de air dash
-    /// </summary>
+
     private void StopAirDashParticles()
     {
         if (airDashParticles == null) return;
-        
-        // Para o sistema de particulas
+
         if (airDashParticles.isPlaying)
         {
             airDashParticles.Stop();
-            
+
             if (showDebugInfo)
-            {
                 Debug.Log("Particulas de air dash paradas.");
-            }
         }
     }
 
-    /// <summary>
-    /// Inicia particulas de pulo (child do personagem)
-    /// </summary>
     private void StartJumpParticles()
     {
         if (jumpParticles == null) return;
-        
-        // Ativa o sistema de particulas
+
         if (!jumpParticles.isPlaying)
         {
             jumpParticles.Play();
-            
+
             if (showDebugInfo)
-            {
                 Debug.Log("Particulas de pulo iniciadas.");
-            }
         }
     }
-    
-    /// <summary>
-    /// Para as particulas de pulo
-    /// </summary>
+
     private void StopJumpParticles()
     {
         if (jumpParticles == null) return;
-        
-        // Para o sistema de particulas
+
         if (jumpParticles.isPlaying)
         {
             jumpParticles.Stop();
-            
+
             if (showDebugInfo)
-            {
                 Debug.Log("Particulas de pulo paradas.");
-            }
         }
     }
 
-    /// <summary>
-    /// Inicia particulas de duplo pulo (child do personagem)
-    /// </summary>
     private void StartDoubleJumpParticles()
     {
         if (doubleJumpParticles == null) return;
-        
-        // Ativa o sistema de particulas
+
         if (!doubleJumpParticles.isPlaying)
         {
             doubleJumpParticles.Play();
-            
+
             if (showDebugInfo)
-            {
                 Debug.Log("Particulas de duplo pulo iniciadas.");
-            }
         }
     }
-    
-    /// <summary>
-    /// Para as particulas de duplo pulo
-    /// </summary>
+
     private void StopDoubleJumpParticles()
     {
         if (doubleJumpParticles == null) return;
-        
-        // Para o sistema de particulas
+
         if (doubleJumpParticles.isPlaying)
         {
             doubleJumpParticles.Stop();
-            
+
             if (showDebugInfo)
-            {
                 Debug.Log("Particulas de duplo pulo paradas.");
-            }
         }
     }
 
-    /// <summary>
-    /// Inicia particulas de air trick (child do personagem)
-    /// </summary>
     private void StartAirTrickParticles()
     {
         if (airTrickParticles == null) return;
-        
-        // Ativa o sistema de particulas
+
         if (!airTrickParticles.isPlaying)
         {
             airTrickParticles.Play();
-            
+
             if (showDebugInfo)
-            {
                 Debug.Log("Particulas de air trick iniciadas.");
-            }
-        }
-    }
-    
-    /// <summary>
-    /// Para as particulas de air trick
-    /// </summary>
-    private void StopAirTrickParticles()
-    {
-        if (airTrickParticles == null) return;
-        
-        // Para o sistema de particulas
-        if (airTrickParticles.isPlaying)
-        {
-            airTrickParticles.Stop();
-            
-            if (showDebugInfo)
-            {
-                Debug.Log("Particulas de air trick paradas.");
-            }
         }
     }
 
-    /// <summary>
-    /// Inicia particulas de wall run (child do personagem)
-    /// </summary>
+    private void StopAirTrickParticles()
+    {
+        if (airTrickParticles == null) return;
+
+        if (airTrickParticles.isPlaying)
+        {
+            airTrickParticles.Stop();
+
+            if (showDebugInfo)
+                Debug.Log("Particulas de air trick paradas.");
+        }
+    }
+
+    public void ResetMovementDirection()
+    {
+        moveDirection = Vector3.zero;
+    }
+
     private void StartWallRunParticles()
     {
-        // Ativa o sistema de particulas correto baseado no lado do wall run
         if (onLeftWall && wallRunLeftParticles != null)
         {
             if (!wallRunLeftParticles.isPlaying)
             {
                 wallRunLeftParticles.Play();
-                
+
                 if (showDebugInfo)
-                {
                     Debug.Log("Particulas de wall run esquerdo iniciadas.");
-                }
             }
         }
         else if (onRightWall && wallRunRightParticles != null)
@@ -1139,39 +1254,29 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             if (!wallRunRightParticles.isPlaying)
             {
                 wallRunRightParticles.Play();
-                
+
                 if (showDebugInfo)
-                {
                     Debug.Log("Particulas de wall run direito iniciadas.");
-                }
             }
         }
     }
-    
-    /// <summary>
-    /// Para as particulas de wall run
-    /// </summary>
+
     private void StopWallRunParticles()
     {
-        // Para ambos os sistemas de particulas (caso algum esteja ativo)
         if (wallRunLeftParticles != null && wallRunLeftParticles.isPlaying)
         {
             wallRunLeftParticles.Stop();
-            
+
             if (showDebugInfo)
-            {
                 Debug.Log("Particulas de wall run esquerdo paradas.");
-            }
         }
-        
+
         if (wallRunRightParticles != null && wallRunRightParticles.isPlaying)
         {
             wallRunRightParticles.Stop();
-            
+
             if (showDebugInfo)
-            {
                 Debug.Log("Particulas de wall run direito paradas.");
-            }
         }
     }
 
@@ -1181,6 +1286,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     private void OnGUI()
     {
+        if (!showDebugInfo) return;
+
         GUI.Label(new Rect(10, 10, 300, 20), $"WallRun: {isWallRunning}");
         GUI.Label(new Rect(10, 30, 300, 20), $"Speed: {currentSpeed:F2}");
         GUI.Label(new Rect(10, 50, 300, 20), $"Animator Busy: {animatorBusy}");

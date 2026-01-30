@@ -36,6 +36,7 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
     [SerializeField] private float railSwitchCooldown = 0.3f; // Tempo minimo entre trocas de rail
     [SerializeField] private float railSwitchSpeed = 12f; // Velocidade da transicao entre rails
     [SerializeField] private float railSwitchDuration = 0.2f; // Duracao da transicao
+    [SerializeField] private float railSwitchMaxDistance = 3.0f; // Distancia maxima para permitir a troca de rail
     
     [Header("Configuracoes de Boost")]
     [SerializeField] private bool infiniteBoost = false;
@@ -230,11 +231,32 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
                 // Calcula a direcao relativa ao movimento do jogador
                 bool switchToLeftRail = DetermineRelativeRailDirection(inputLeft);
                 
-                if (currentRail.HasAdjacentRail(switchToLeftRail))
+            if (currentRail.HasAdjacentRail(switchToLeftRail))
+            {
+                // 1. Obtem o rail adjacente
+                Rail_SonicStyle_Spline targetRailCandidate = currentRail.GetAdjacentRail(switchToLeftRail);
+
+                if (targetRailCandidate != null)
                 {
-                    StartRailSwitch(switchToLeftRail);
-                    return;
+                    // 2. Encontra o ponto mais proximo no rail adjacente
+                    float closestT = targetRailCandidate.GetClosestT(transform.position);
+                    Vector3 closestPoint = targetRailCandidate.GetPositionAtT(closestT);
+
+                    // 3. Calcula a distancia
+                    float distanceToTargetRail = Vector3.Distance(transform.position, closestPoint);
+
+                    // 4. Verifica se a distancia esta dentro do limite
+                    if (distanceToTargetRail <= railSwitchMaxDistance)
+                    {
+                        StartRailSwitch(switchToLeftRail);
+                        return;
+                    }
+                    else if (showDebugInfo)
+                    {
+                        Debug.Log("Troca de Rail Bloqueada: Distancia (" + distanceToTargetRail.ToString("F2") + "m) excede o maximo permitido (" + railSwitchMaxDistance.ToString("F2") + "m).");
+                    }
                 }
+            }
             }
         }
         
@@ -363,7 +385,12 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         // Ativa linhas de velocidade durante a troca de rail
         if (enableSpeedLinesOnSwitch && speedLines != null)
         {
-            speedLines.EnableEffect();
+            // Calcula a direção do movimento no rail atual
+            Vector3 travelDirection = currentRail.GetTangentAtT(currentT);
+            if (!movingForward) travelDirection = -travelDirection;
+
+            // Chama EnableEffect com a direção
+            speedLines.EnableEffect(travelDirection);
         }
         
         Debug.Log("Iniciando troca para rail " + (switchLeft ? "esquerdo" : "direito") + ": " + adjacentRail.gameObject.name);
@@ -538,6 +565,9 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
             Quaternion targetRotation = Quaternion.LookRotation(direction);
             transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, Time.deltaTime * rotationLerpSpeed);
         }
+
+        // Logica de Camera Cinematografica (agora no Rail)
+        currentRail?.CheckCinematicCamera(currentT, movingForward);
     }
 
     private void HandleBoost()
@@ -582,6 +612,12 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         
         // Para particulas de boost
         StopBoostParticles();
+
+        // Desativa o efeito de FOV/SpeedLines
+        if (speedLines != null)
+        {
+            speedLines.DisableEffect();
+        }
         
         Debug.Log("BOOST desativado");
     }
@@ -715,12 +751,17 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         }
     }
 
+
+
     /// <summary>
     /// NOVA FUNCAO: Sai do rail com pulo antecipado antes do final
     /// </summary>
     private void ExitRailWithEarlyJump()
     {
         if (!isGrinding) return;
+        currentRail?.DeactivateCinematicCamera();
+
+
 
         isGrinding = false;
         isBoosting = false;
@@ -780,6 +821,9 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
     private void ExitRail(bool jumpOff)
     {
         if (!isGrinding) return;
+        currentRail?.DeactivateCinematicCamera();
+
+
 
         isGrinding = false;
         isBoosting = false;
@@ -852,6 +896,9 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
     private void ExitRailAtEnd()
     {
         if (!isGrinding) return;
+        currentRail?.DeactivateCinematicCamera();
+
+
 
         isGrinding = false;
         isBoosting = false;

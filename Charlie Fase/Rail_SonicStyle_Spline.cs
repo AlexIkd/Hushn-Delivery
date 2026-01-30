@@ -19,6 +19,23 @@ public class Rail_SonicStyle_Spline : MonoBehaviour
     [SerializeField] private bool showAdjacentConnections = true;
     [SerializeField] private int visualizationSegments = 50;
 
+    [Header("Configuracoes de Camera Cinematografica")]
+    [SerializeField] private bool enableCinematicCamera = false;
+    [SerializeField] private float cinematicCameraDistance = 0.8f; // Distancia (0-1) no rail para ativar a camera cinematografica
+    [SerializeField] private GameObject cinematicCamera; // Referencia a camera cinematografica (ex: Cinemachine Virtual Camera)
+    
+    [Header("Tempos de Transicao (Individual)")]
+    [Tooltip("Tempo para a camera transicionar da principal para a do rail.")]
+    [SerializeField] private float transitionInDuration = 0.5f;
+    [Tooltip("Tempo para a camera transicionar da do rail de volta para a principal.")]
+    [SerializeField] private float transitionOutDuration = 0.5f;
+
+    [Header("Configuracoes de Cooldown")]
+    [Tooltip("Tempo (em segundos) que a camera cinematografica ficara desativada apos ser desativada.")]
+    [SerializeField] private float cameraCooldownDuration = 2.0f;
+    private float lastCameraDeactivationTime = -Mathf.Infinity;
+    private bool isCinematicCameraActive = false;
+
     [Header("Mesh Collider (Opcional)")]
     [SerializeField] private MeshCollider meshCollider;
     [SerializeField] private float colliderRadius = 0.5f;
@@ -30,6 +47,11 @@ public class Rail_SonicStyle_Spline : MonoBehaviour
     private void Awake()
     {
         splineContainer = GetComponent<SplineContainer>();
+        // Garante que a camera cinematografica esteja desativada ao iniciar
+        if (cinematicCamera != null)
+        {
+            cinematicCamera.SetActive(false);
+        }
         if (splineContainer != null && splineContainer.Splines.Count > 0)
         {
             spline = splineContainer.Splines[0];
@@ -193,193 +215,94 @@ public class Rail_SonicStyle_Spline : MonoBehaviour
         return isLeft ? leftRail != null : rightRail != null;
     }
 
-    public Rail_SonicStyle_Spline GetAdjacentRail(bool isLeft)
-    {
-        return isLeft ? leftRail : rightRail;
-    }
-
     /// <summary>
-    /// Gera mesh collider automaticamente baseado no spline
+    /// Verifica se a camera cinematografica deve ser ativada/desativada
     /// </summary>
-    [ContextMenu("Generate Mesh Collider")]
-    public void GenerateMeshCollider()
+    public void CheckCinematicCamera(float currentT, bool movingForward)
     {
-        if (spline == null)
+        if (!enableCinematicCamera || isLoop) return;
+
+        // Verifica se esta perto do fim (1.0) ou do inicio (0.0)
+        bool nearEnd = movingForward ? currentT >= cinematicCameraDistance : currentT <= (1f - cinematicCameraDistance);
+        
+        // Adiciona uma verificacao para garantir que nao estamos em transicao
+        if (CameraRailManager.Instance != null && CameraRailManager.Instance.IsTransitioning())
         {
-            Debug.LogError("Spline nao encontrado!");
             return;
         }
 
-        if (meshCollider == null)
-        {
-            meshCollider = GetComponent<MeshCollider>();
-            if (meshCollider == null)
-            {
-                meshCollider = gameObject.AddComponent<MeshCollider>();
-            }
-        }
-
-        Mesh mesh = GenerateTubeMesh();
-        meshCollider.sharedMesh = mesh;
-        meshCollider.convex = false;
-        meshCollider.isTrigger = true;
-
-        Debug.Log("Mesh Collider gerado para '" + gameObject.name + "' com " + colliderSegments + " segmentos");
-    }
-
-    private Mesh GenerateTubeMesh()
-    {
-        Mesh mesh = new Mesh();
-        mesh.name = "RailCollider_" + gameObject.name;
-
-        int segments = colliderSegments;
-        int sides = 8; // Octogono para o tubo
-        int vertexCount = segments * sides;
-        int triangleCount = (segments - 1) * sides * 6;
-
-        Vector3[] vertices = new Vector3[vertexCount];
-        int[] triangles = new int[triangleCount];
-
-        // Gera vertices ao longo do spline
-        for (int i = 0; i < segments; i++)
-        {
-            float t = (float)i / (segments - 1);
-            Vector3 position = GetPositionAtT(t);
-            Vector3 tangent = GetTangentAtT(t);
-            
-            // Cria circulo perpendicular ao spline
-            Vector3 normal = Vector3.Cross(tangent, Vector3.up);
-            if (normal.magnitude < 0.1f)
-                normal = Vector3.Cross(tangent, Vector3.right);
-            normal.Normalize();
-            
-            Vector3 binormal = Vector3.Cross(tangent, normal).normalized;
-
-            for (int j = 0; j < sides; j++)
-            {
-                float angle = (float)j / sides * Mathf.PI * 2f;
-                Vector3 offset = (Mathf.Cos(angle) * normal + Mathf.Sin(angle) * binormal) * colliderRadius;
-                
-                int vertexIndex = i * sides + j;
-                vertices[vertexIndex] = transform.InverseTransformPoint(position + offset);
-            }
-        }
-
-        // Gera triangulos
-        int triIndex = 0;
-        for (int i = 0; i < segments - 1; i++)
-        {
-            for (int j = 0; j < sides; j++)
-            {
-                int current = i * sides + j;
-                int next = i * sides + (j + 1) % sides;
-                int currentNext = (i + 1) * sides + j;
-                int nextNext = (i + 1) * sides + (j + 1) % sides;
-
-                // Primeiro triangulo
-                triangles[triIndex++] = current;
-                triangles[triIndex++] = currentNext;
-                triangles[triIndex++] = next;
-
-                // Segundo triangulo
-                triangles[triIndex++] = next;
-                triangles[triIndex++] = currentNext;
-                triangles[triIndex++] = nextNext;
-            }
-        }
-
-        mesh.vertices = vertices;
-        mesh.triangles = triangles;
-        mesh.RecalculateNormals();
-        mesh.RecalculateBounds();
-
-        return mesh;
-    }
-
-    private void OnDrawGizmos()
-    {
-        if (spline == null && splineContainer != null && splineContainer.Splines.Count > 0)
-        {
-            spline = splineContainer.Splines[0];
-        }
-
-        if (spline == null) return;
-
-        Gizmos.color = railColor;
-
-        // Desenha o spline
-        Vector3 previousPoint = GetPositionAtT(0);
-        for (int i = 1; i <= visualizationSegments; i++)
-        {
-            float t = (float)i / visualizationSegments;
-            Vector3 currentPoint = GetPositionAtT(t);
-            Gizmos.DrawLine(previousPoint, currentPoint);
-            previousPoint = currentPoint;
-        }
-
-        // Desenha inicio e fim
-        Gizmos.color = Color.green;
-        Gizmos.DrawSphere(GetPositionAtT(0), 0.3f);
+        // Verifica se o cooldown ainda esta ativo antes de tentar ativar a camera
+        bool isCooldownActive = Time.time < lastCameraDeactivationTime + cameraCooldownDuration;
         
-        if (!isLoop)
+        if (nearEnd && !isCinematicCameraActive && !isCooldownActive)
         {
-            Gizmos.color = Color.red;
-            Gizmos.DrawSphere(GetPositionAtT(1), 0.3f);
+            ActivateCinematicCamera();
         }
-
-        // Desenha conexoes com rails adjacentes
-        if (showAdjacentConnections)
+        else if (!nearEnd && isCinematicCameraActive)
         {
-            if (leftRail != null)
-            {
-                Gizmos.color = Color.cyan;
-                Vector3 startPos = GetPositionAtT(0);
-                Vector3 leftPos = leftRail.GetPositionAtT(0);
-                Gizmos.DrawLine(startPos, leftPos);
-            }
-
-            if (rightRail != null)
-            {
-                Gizmos.color = Color.magenta;
-                Vector3 startPos = GetPositionAtT(0);
-                Vector3 rightPos = rightRail.GetPositionAtT(0);
-                Gizmos.DrawLine(startPos, rightPos);
-            }
+            DeactivateCinematicCamera();
         }
     }
 
-    private void OnDrawGizmosSelected()
+    /// <summary>
+    /// Ativa a camera cinematografica e desativa a camera padrao
+    /// AGORA INICIA A TRANSICAO SUAVE COM TEMPO INDIVIDUAL
+    /// </summary>
+    public void ActivateCinematicCamera()
     {
-        if (spline == null) return;
+        if (cinematicCamera == null || isCinematicCameraActive) return;
 
-        // Desenha setas indicando direcao
-        Gizmos.color = Color.white;
-        for (int i = 0; i < 10; i++)
+        if (CameraRailManager.Instance != null)
         {
-            float t = (float)i / 10f + 0.05f;
-            Vector3 position = GetPositionAtT(t);
-            Vector3 tangent = GetTangentAtT(t);
-            DrawArrow(position, tangent, 0.5f);
+            // Inicia a transicao suave para a camera do rail usando o tempo deste rail
+            CameraRailManager.Instance.StartTransitionToRail(cinematicCamera, transitionInDuration);
         }
-
-#if UNITY_EDITOR
-        // Label com informacoes
-        Vector3 startPos = GetPositionAtT(0);
-        string info = gameObject.name + "\n";
-        info += "Comprimento: " + GetSplineLength().ToString("F1") + "m\n";
-        info += "Velocidade: " + recommendedSpeed.ToString("F1") + "\n";
-        info += "Loop: " + (isLoop ? "Sim" : "Nao");
+        else
+        {
+            // Fallback para a logica original (troca instantanea)
+            if (Camera.main != null)
+            {
+                Camera.main.gameObject.SetActive(false);
+            }
+            cinematicCamera.SetActive(true);
+        }
         
-        UnityEditor.Handles.Label(startPos + Vector3.up * 0.5f, info);
-#endif
+        isCinematicCameraActive = true;
     }
 
-    private void DrawArrow(Vector3 position, Vector3 direction, float size)
+    /// <summary>
+    /// Desativa a camera cinematografica e ativa a camera padrao
+    /// AGORA INICIA A TRANSICAO SUAVE DE VOLTA COM TEMPO INDIVIDUAL
+    /// </summary>
+    public void DeactivateCinematicCamera()
     {
-        Vector3 right = Quaternion.LookRotation(direction) * Quaternion.Euler(0, 180 + 20, 0) * Vector3.forward;
-        Vector3 left = Quaternion.LookRotation(direction) * Quaternion.Euler(0, 180 - 20, 0) * Vector3.forward;
+        if (cinematicCamera == null || !isCinematicCameraActive) return;
+
+        if (CameraRailManager.Instance != null)
+        {
+            // Inicia a transicao suave de volta para a camera principal usando o tempo deste rail
+            CameraRailManager.Instance.StartTransitionToMain(Camera.main.transform, cinematicCamera, transitionOutDuration);
+        }
+        else
+        {
+            // Fallback para a logica original (troca instantanea)
+            if (Camera.main != null)
+            {
+                Camera.main.gameObject.SetActive(true);
+            }
+            cinematicCamera.SetActive(false);
+        }
         
-        Gizmos.DrawRay(position, right * size);
-        Gizmos.DrawRay(position, left * size);
+        isCinematicCameraActive = false;
+        lastCameraDeactivationTime = Time.time;
+        
+        // Desativa o flag para que a camera cinematografica nao seja ativada novamente
+        // a menos que seja reativada manualmente no Inspector.
+        enableCinematicCamera = false;
+    }
+
+    public Rail_SonicStyle_Spline GetAdjacentRail(bool isLeft)
+    {
+        return isLeft ? leftRail : rightRail;
     }
 }

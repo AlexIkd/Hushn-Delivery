@@ -4,9 +4,6 @@ using System;
 using System.Collections.Generic; // Adicionado para List, se necessário
 
 [RequireComponent(typeof(CharacterController))]
-[RequireComponent(typeof(WaterDetector))]
-[RequireComponent(typeof(WaterMovementController))]
-
 public class PlayerMovement_FrontiersStyle : MonoBehaviour
 {
     // Referência ao sistema de ranking de estilo
@@ -117,11 +114,6 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     // ✅ NOVO: Referência ao WallDashJump para bloquear Wall Run
     private WallDashJump wallDashJump;
 
-    // ✅ NOVO: Referências aos scripts de movimentação na água
-    private WaterDetector waterDetector;
-    private WaterMovementController waterMovementController;
-
-
     // Movimento
     private Vector3 moveDirection = Vector3.zero;
     private Vector3 lastMoveDirection = Vector3.zero;
@@ -200,23 +192,6 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             Debug.LogWarning("WallDashJump não encontrado no mesmo GameObject.");
         }
 
-        // ✅ NOVO: Inicializa referências aos scripts de água
-        waterDetector = GetComponent<WaterDetector>();
-        if (waterDetector == null)
-        {
-            Debug.LogError("WaterDetector não encontrado no mesmo GameObject.");
-        }
-        waterMovementController = GetComponent<WaterMovementController>();
-        if (waterMovementController == null)
-        {
-            Debug.LogError("WaterMovementController não encontrado no mesmo GameObject.");
-        }
-        // Desativa o WaterMovementController por padrão, ele será ativado quando o personagem entrar na água.
-        if (waterMovementController != null)
-        {
-            waterMovementController.enabled = false;
-        }
-
         // Validação do groundCheck
         if (groundCheck == null)
         {
@@ -272,66 +247,38 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         }
 
         // 4. MOVIMENTO
-        bool isInWater = waterDetector != null && waterDetector.IsInsideWaterVolume;
-
-        if (isInWater)
+        // Lógica de movimento terrestre
+        if (animatorBusy)
         {
-            // Ativa o controlador de água e desativa a movimentação terrestre
-            if (waterMovementController != null && waterMovementController.enabled == false)
+            ApplyQuickTurnDeceleration();
+            ApplyGravity();
+        }
+        else if (isWallRunning)
+        {
+            HandleWallRunInput();
+
+            if (isWallRunning)
             {
-                waterMovementController.enabled = true;
-                // Passa a velocidade horizontal atual para o controlador de água para manter o momentum
-                waterMovementController.SetInitialHorizontalVelocity(new Vector3(moveDirection.x, 0, moveDirection.z));
-                moveDirection = Vector3.zero; // Zera a movimentação terrestre
-                currentSpeed = 0f;
+                WallRunMovement();
             }
-            // Se o controlador de água estiver ativo, este script não aplica movimento
-            // O WaterMovementController se encarregará do CharacterController.Move()
         }
         else
         {
-            // Desativa o controlador de água e ativa a movimentação terrestre
-            if (waterMovementController != null && waterMovementController.enabled == true)
-            {
-                waterMovementController.enabled = false;
-                // Opcional: Resetar qualquer estado de movimento aquático ao sair da água
-            }
+            HandleInputAndMovement();
+            HandleRotation();
+            ApplyGravity();
 
-            // Lógica de movimento terrestre
-            if (animatorBusy)
+            if (isDashing)
             {
-                ApplyQuickTurnDeceleration();
-                ApplyGravity();
-            }
-            else if (isWallRunning)
-            {
-                HandleWallRunInput();
-
-                if (isWallRunning)
-                {
-                    WallRunMovement();
-                }
-            }
-            else
-            {
-                HandleInputAndMovement();
-                HandleRotation();
-                ApplyGravity();
-
-                if (isDashing)
-                {
-                    AirDashMovement();
-                }
-            }
-
-            // 5. Aplicação Final do Movimento Terrestre
-            if (controller.enabled)
-            {
-                controller.Move(moveDirection * Time.deltaTime);
+                AirDashMovement();
             }
         }
 
-
+        // 5. Aplicação Final do Movimento Terrestre
+        if (controller.enabled)
+        {
+            controller.Move(moveDirection * Time.deltaTime);
+        }
     }
 
     private void FixedUpdate()
@@ -404,7 +351,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     }
 
     // ======================================================
-    // WALL RUN
+    // GROUND CHECK
     // ======================================================
 
     private void CheckGround()
@@ -423,6 +370,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             hasWallRun = false;
         }
     }
+
+    // ======================================================
+    // WALL RUN
+    // ======================================================
 
     private void CheckWallRun()
     {

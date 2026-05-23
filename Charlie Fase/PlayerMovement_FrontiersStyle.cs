@@ -1,7 +1,7 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
 using System;
-using System.Collections.Generic; // Adicionado para List, se necessário
+using System.Collections.Generic;
 
 [RequireComponent(typeof(CharacterController))]
 public class PlayerMovement_FrontiersStyle : MonoBehaviour
@@ -11,6 +11,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [Header("Configurações de Velocidade")]
     [SerializeField] public float maxSpeed = 15f;
     [SerializeField] private float acceleration = 10f;
+    [SerializeField] private float airAcceleration = 5f; // Taxa de aceleração reduzida no ar
     [SerializeField] private float deceleration = 15f;
     [SerializeField] private float turnSpeed = 500f;
 
@@ -58,6 +59,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [SerializeField] private Transform groundCheck;
     [SerializeField] private LayerMask groundMask;
     [SerializeField] private float wallDistance = 1.0f;
+    [SerializeField] private LayerMask railLayer; // Nova Layer para Rails
+    [SerializeField] private float railProximityRadius = 3f; // Raio para verificar proximidade de rails
     [SerializeField] private float maxWallRunAngle = 45f;
 
     [Header("Air Trick Settings")]
@@ -84,6 +87,22 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [SerializeField] private ParticleSystem wallRunRightParticles;
     [SerializeField] private bool enableWallRunParticles = true;
 
+    [Header("Glide Settings")]
+    [SerializeField] private bool canGlide = true;
+    [SerializeField] private float glideGravity = 0.8f; // Gravidade mais suave para um glide prolongado
+    [SerializeField] public float glideForwardSpeed = 25f; // Velocidade frontal aumentada para manter o momentum
+    [SerializeField] private float glideTurnSpeed = 8f; // Aumenta a responsividade da curva durante o glide
+    [SerializeField] private float glideLiftForce = 2.0f; // Força de sustentação para prolongar o tempo no ar
+    [SerializeField] private float glideEntryBoost = 8f; // Impulso inicial mais forte para uma entrada suave
+    [SerializeField] private float maxGlideFallSpeed = -1.5f; // Queda ainda mais lenta para simular melhor o glide
+    [SerializeField] private float glideDeceleration = 5f; // Taxa de desaceleração do glide
+    [SerializeField] private float minGlideSpeed = 10f; // Velocidade mínima do glide
+    [SerializeField] private float glideGraceTime = 0.15f; // Tempo de carência para não desativar imediatamente
+    [SerializeField] private float minHeightForGlide = 5f; // Altura mínima para ativar o glide
+    [SerializeField] private ParticleSystem glideParticles;
+    [SerializeField] private float glideCooldown = 3.0f;
+    private float glideCooldownTimer = 0f;
+
     [Header("Debug")]
     [SerializeField] private bool showDebugInfo = false; // ✅ DESATIVADO por padrão
 
@@ -103,6 +122,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private bool onRightWall = false;
     private Vector3 wallNormal;
     private Vector3 lastWallNormal;
+    private bool isGliding = false;
+    private bool glideButtonHeld = false;
+    private float glideGraceTimer = 0f;
+    private float currentGlideSpeed; // Velocidade atual do glide
 
     // Componentes
     private CharacterController controller;
@@ -110,6 +133,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private Transform cameraTransform;
     private Transform cachedTransform;
     private PlayerRailRide_SonicStyle_Spline railRide;
+    private bool isNearRail = false; // Novo estado para indicar proximidade de rail
     
     // ✅ NOVO: Referência ao WallDashJump para bloquear Wall Run
     private WallDashJump wallDashJump;
@@ -128,6 +152,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     // Variáveis para controle de estado de animação de pulo
     private bool isJumping = false;
     private bool isFalling = false;
+    private bool canJumpAfterGrind = false; // Permite um pulo normal ao sair do rail mesmo no ar
 
     // Velocidade externa
     private Vector3 externalVelocity = Vector3.zero;
@@ -153,6 +178,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private bool cachedOnLeftWall = false;
     private bool cachedOnRightWall = false;
     private bool cachedProlongedIdle = false;
+    private bool cachedIsGliding = false;
     private const float SPEED_CHANGE_THRESHOLD = 0.01f;
 
     // ✅ OTIMIZAÇÕES - CONTROLE DE RAYCASTS
@@ -208,13 +234,22 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
         airDashCharges = maxAirDashCharges;
         doubleJumpCharges = maxDoubleJumpCharges;
+
+        // Garante que as partículas de glide não comecem tocando
+        if (glideParticles != null)
+        {
+            glideParticles.Stop();
+        }
     }
 
     void Update()
     {
         // ✅ OTIMIZADO: Early exit se estiver no rail
         if (railRide != null && railRide.isGrinding)
+        {
+            if (isGliding) StopGlide(); // Certifica que o glide é cancelado ao entrar no rail
             return;
+        }
 
         // 1. Pré-processamento e Verificações de Estado
         CheckGround();
@@ -225,6 +260,15 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         UpdateRotationLock();
         UpdateAirTrickCooldown();
         HandleProlongedIdle();
+
+        // Atualiza o timer de carência do glide
+if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
+        if (glideCooldownTimer > 0) glideCooldownTimer -= Time.deltaTime;
+        
+        // IMPORTANTE: HandleGlide deve vir DEPOIS de processar o pulo duplo no ApplyGravity
+        // mas antes de aplicar o movimento final.
+        // No entanto, para capturar o GetButtonDown corretamente, vamos manter a ordem lógica.
+        HandleGlide(); 
         UpdateAnimator();
 
         // 2. Lógica de Recuperação
@@ -262,6 +306,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                 WallRunMovement();
             }
         }
+        else if (isGliding)
+        {
+            GlideMovement();
+        }
         else
         {
             HandleInputAndMovement();
@@ -291,7 +339,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     private void HandleInputAndMovement()
     {
-        if (recoveringFromWallRun || isDashing) return;
+        if (recoveringFromWallRun || isDashing) return; // Removido isGliding para permitir input durante o glide
 
         float horizontalInput = Input.GetAxis("Horizontal");
         float verticalInput = Input.GetAxis("Vertical");
@@ -311,7 +359,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                     animator.SetBool("ProlongedIdle", false);
             }
 
-            currentSpeed = Mathf.MoveTowards(currentSpeed, maxSpeed, acceleration * Time.deltaTime);
+            // Usa aceleração normal no chão e reduzida no ar
+            float currentAccel = controller.isGrounded ? acceleration : airAcceleration;
+            currentSpeed = Mathf.MoveTowards(currentSpeed, maxSpeed, currentAccel * Time.deltaTime);
 
             if (cameraTransform != null)
             {
@@ -364,10 +414,22 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             isGrounded = Physics.CheckSphere(groundCheck.position, GROUND_CHECK_RADIUS, groundMask);
         }
 
+        // Nova verificação de proximidade do rail
+        isNearRail = Physics.CheckSphere(cachedTransform.position, railProximityRadius, railLayer);
+
         if (isGrounded)
         {
             isStomping = false;
             hasWallRun = false;
+            canJumpAfterGrind = false;
+            // Se estiver no chão e planando, e não houver tempo de carência, para o glide.
+            // O glideGraceTimer é para evitar desativações prematuras logo após um pulo, por exemplo.
+            if (isGliding && glideGraceTimer <= 0f) StopGlide();
+        }
+        else if (isNearRail && !isJumping)
+        {
+            // Se estiver perto de um rail e não estiver pulando ativamente, permite o pulo normal
+            canJumpAfterGrind = true;
         }
     }
 
@@ -440,6 +502,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private void StartWallRun()
     {
         if (isWallRunning) return;
+
+        // Se estiver planando, para o glide ao iniciar o wall run
+        if (isGliding) StopGlide();
 
         styleRankSystem?.OnWallRunStart();
 
@@ -612,6 +677,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             animator.SetTrigger("QuickTurn");
 
         animatorBusy = true;
+        if (isGliding) StopGlide(); // Cancela glide ao iniciar quick turn
     }
 
     public void CompleteQuickTurn()
@@ -700,7 +766,26 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             return isHighEnough;
         }
 
-        return true;
+        return false;
+    }
+
+    private bool IsHighEnoughForGlide()
+    {
+        if (Physics.Raycast(cachedTransform.position, Vector3.down, out raycastHit, RAYCAST_MAX_DISTANCE, groundMask))
+        {
+            float distanceToGround = raycastHit.distance;
+            bool isHighEnough = distanceToGround >= minHeightForGlide;
+
+            if (showDebugInfo)
+            {
+                Debug.DrawRay(cachedTransform.position, Vector3.down * distanceToGround,
+                             isHighEnough ? Color.green : Color.cyan); // Cor diferente para debug do glide
+            }
+
+            return isHighEnough;
+        }
+
+        return false;
     }
 
     private void TriggerAirTrick()
@@ -719,6 +804,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
         if (showDebugInfo)
             Debug.Log($"🌀 Air Trick - Rotação travada por {airTrickRotationLockTime}s");
+
+        if (isGliding) StopGlide(); // Cancela glide ao iniciar air trick
     }
 
     private float GetCurrentHeight()
@@ -811,18 +898,26 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private void ApplyGravity()
     {
         if (isDashing || recoveringFromWallRun || isStomping) return;
+        if (isGliding) return; // Gravidade do glide é aplicada em GlideMovement()
 
         float effectiveGravity = isWallRunning ? wallRunGravity : gravity;
 
-        if (controller.isGrounded)
+        bool canDoNormalJump = controller.isGrounded || canJumpAfterGrind || isNearRail;
+
+        if (canDoNormalJump)
         {
-            moveDirection.y = -controller.stepOffset;
-            isFalling = false;
+            if (controller.isGrounded || isNearRail)
+            {
+                moveDirection.y = -controller.stepOffset;
+                isFalling = false;
+            }
 
             if (Input.GetButtonDown("Jump") && !animatorBusy)
             {
                 moveDirection.y = jumpForce;
                 isJumping = true;
+                isFalling = false; // Garante que não esteja caindo ao pular
+                canJumpAfterGrind = false; // Consome o pulo do rail
 
                 if (airDashCharges < maxAirDashCharges)
                 {
@@ -848,23 +943,38 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         }
         else
         {
-            if (Input.GetButtonDown("Jump") && !animatorBusy && doubleJumpCharges > 0)
+            // Lógica Unificada: Pulo Duplo OU Glide
+            if (Input.GetButtonDown("Jump") && !animatorBusy)
             {
-                moveDirection.y = jumpForce;
-                doubleJumpCharges--;
-                isJumping = true;
-                isFalling = false;
-
-                if (animator != null)
-                    animator.SetTrigger("DoubleJump");
-
-                if (enableDoubleJumpParticles && doubleJumpParticles != null)
+                if (doubleJumpCharges > 0)
                 {
-                    StartDoubleJumpParticles();
-                }
+                    // Executa Pulo Duplo
+                    moveDirection.y = jumpForce;
+                    doubleJumpCharges--;
+                    isJumping = true;
+                    isFalling = false;
 
-                if (showDebugInfo)
-                    Debug.Log($"🚀 Pulo Duplo! Cargas restantes: {doubleJumpCharges}");
+                    if (animator != null)
+                        animator.SetTrigger("DoubleJump");
+
+                    if (enableDoubleJumpParticles && doubleJumpParticles != null)
+                        StartDoubleJumpParticles();
+
+                    if (showDebugInfo)
+                        Debug.Log($"🚀 Pulo Duplo! Cargas restantes: {doubleJumpCharges}");
+                }
+else if (canGlide && !isGliding && glideCooldownTimer <= 0f)
+                {
+                    // Tenta iniciar o Glide se não houver mais pulos
+                    bool canStartGlide = !isWallRunning && !isStomping && !isDashing && 
+                                        !isRotationLocked && (railRide == null || !railRide.isGrinding);
+                    
+                    if (canStartGlide)
+                    {
+                        StartGlide();
+                        return; // Sai para evitar aplicar gravidade no frame de início
+                    }
+                }
             }
 
             moveDirection.y -= effectiveGravity * Time.deltaTime;
@@ -872,8 +982,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             // ✅ OTIMIZADO: Verificações simplificadas
             if (moveDirection.y < -0.1f)
             {
-                isFalling = true;
                 isJumping = false;
+                isFalling = true;
             }
             else if (moveDirection.y > 0.1f)
             {
@@ -911,6 +1021,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private void StartStomp()
     {
         isStomping = true;
+        if (isGliding) StopGlide(); // Cancela glide ao iniciar stomp
 
         moveDirection.x = 0;
         moveDirection.z = 0;
@@ -961,6 +1072,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         isDashing = true;
         airDashTimer = airDashDuration;
         airDashCharges--;
+
+        if (isGliding) StopGlide(); // Cancela glide ao usar air dash
 
         // ✅ OTIMIZADO: Reutiliza Vector3
         horizontalMove.x = moveDirection.x;
@@ -1027,6 +1140,159 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                     animator.SetBool("ProlongedIdle", false);
             }
         }
+    }
+
+    // ======================================================
+    // GLIDE MECHANIC
+    // ======================================================
+
+    private void HandleGlide()
+    {
+        if (!canGlide) return;
+
+        // Verifica se o botão de pulo (barra de espaço) está sendo segurado
+        glideButtonHeld = Input.GetButton("Jump");
+
+        // Se já estiver planando, a única coisa que cancela é soltar o botão ou tocar o chão (tratado no CheckGround)
+        if (isGliding)
+        {
+            if (!glideButtonHeld)
+            {
+                StopGlide();
+            }
+            return;
+        }
+        
+        // A ativação agora é tratada dentro do ApplyGravity para garantir sincronia com o pulo duplo.
+    }
+
+    private void StartGlide()
+    {
+        if (isGliding) return;
+
+        // Bloqueios
+        if (controller.isGrounded || isWallRunning || isStomping || isDashing || animatorBusy || isRotationLocked || (railRide != null && railRide.isGrinding))
+        {
+            if (showDebugInfo) Debug.Log("🚫 Glide BLOQUEADO - Em estado incompatível.");
+            return;
+        }
+
+        isGliding = true;
+        glideGraceTimer = glideGraceTime; // Inicia o timer de carência
+        isJumping = false;
+        isFalling = true; 
+
+        // Zera a velocidade vertical e adiciona um pequeno impulso para cima para garantir a saída do chão
+        moveDirection.y = 2.0f; // Pequeno impulso vertical para iniciar o glide suavemente
+        
+// Mantém o momentum atual ao entrar no glide, sem impulso adicional
+        currentGlideSpeed = Mathf.Max(new Vector3(moveDirection.x, 0, moveDirection.z).magnitude, minGlideSpeed); // Define a velocidade inicial baseada no momentum atual
+
+        if (animator != null)
+        {
+            animator.SetBool("IsGliding", true);
+        }
+
+        StartGlideParticles();
+
+        if (showDebugInfo)
+            Debug.Log("✈️ Glide iniciado!");
+    }
+
+    private void StopGlide()
+    {
+        if (!isGliding) return;
+
+        isGliding = false;
+
+        if (animator != null)
+        {
+            animator.SetBool("IsGliding", false);
+            if (showDebugInfo) Debug.Log("✅ Animator: IsGliding = false");
+        }
+
+StopGlideParticles();
+        glideCooldownTimer = glideCooldown;
+
+        if (showDebugInfo)
+            Debug.Log($"🛑 Glide encerrado! Cooldown de {glideCooldown}s iniciado.");
+    }
+
+    private void GlideMovement()
+    {
+        if (!isGliding) return;
+
+        // Aplica gravidade reduzida
+        moveDirection.y -= glideGravity * Time.deltaTime;
+
+        // Limita a velocidade de queda
+        moveDirection.y = Mathf.Max(moveDirection.y, maxGlideFallSpeed);
+
+        // Cancela o glide se a altura for menor que a mínima
+        if (GetCurrentHeight() < minHeightForGlide)
+        {
+            StopGlide();
+            if (showDebugInfo) Debug.Log("🛑 Glide cancelado: altura mínima atingida.");
+            return; // Sai do método após cancelar o glide
+        }
+
+        // Adiciona sustentação se o botão de pulo estiver sendo segurado
+        if (glideButtonHeld)
+        {
+            moveDirection.y += glideLiftForce * Time.deltaTime;
+        }
+
+        // Captura o input do jogador para controle direcional durante o glide
+        float horizontalInput = Input.GetAxis("Horizontal");
+        float verticalInput = Input.GetAxis("Vertical");
+
+        inputVector.x = horizontalInput;
+        inputVector.y = 0;
+        inputVector.z = verticalInput;
+        float inputMagnitude = inputVector.magnitude;
+
+        Vector3 currentHorizontalMove = new Vector3(moveDirection.x, 0, moveDirection.z);
+        Vector3 targetHorizontalDirection = cachedTransform.forward; // Direção padrão se não houver input
+
+        if (inputMagnitude > 0.1f)
+        {
+            // Calcula a direção desejada baseada no input e na câmera
+            if (cameraTransform != null)
+            {
+                cameraForward = cameraTransform.forward;
+                cameraRight = cameraTransform.right;
+                cameraForward.y = 0;
+                cameraRight.y = 0;
+                cameraForward.Normalize();
+                cameraRight.Normalize();
+
+                targetHorizontalDirection = (cameraForward * verticalInput + cameraRight * horizontalInput).normalized;
+            }
+            else
+            {
+                targetHorizontalDirection = cachedTransform.forward; // Fallback se a câmera não estiver disponível
+            }
+        }
+
+        // Interpola suavemente a direção horizontal atual para a direção desejada
+        Vector3 newHorizontalDirection = Vector3.Slerp(currentHorizontalMove.normalized, targetHorizontalDirection, Time.deltaTime * glideTurnSpeed).normalized;
+
+        // Desacelera a velocidade atual do glide
+        currentGlideSpeed = Mathf.MoveTowards(currentGlideSpeed, minGlideSpeed, glideDeceleration * Time.deltaTime);
+
+        // Aplica a velocidade frontal na nova direção horizontal
+        moveDirection.x = newHorizontalDirection.x * currentGlideSpeed;
+        moveDirection.z = newHorizontalDirection.z * currentGlideSpeed;
+
+        // Rotação suave do jogador para a direção do movimento
+        if (newHorizontalDirection.sqrMagnitude > 0.01f && !isRotationLocked)
+        {
+            Quaternion targetGlideRotation = Quaternion.LookRotation(newHorizontalDirection);
+            cachedTransform.rotation = Quaternion.Slerp(cachedTransform.rotation, targetGlideRotation, Time.deltaTime * glideTurnSpeed * 0.75f); // Rotação mais ágil
+        }
+
+        // Atualiza currentSpeed para animação, se necessário
+        currentSpeed = currentGlideSpeed;
     }
 
     // ======================================================
@@ -1101,6 +1367,13 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             animator.SetBool("ProlongedIdle", isProlongedIdle);
             cachedProlongedIdle = isProlongedIdle;
         }
+
+        // ✅ NOVO: Só atualiza IsGliding se mudou
+        if (isGliding != cachedIsGliding)
+        {
+            animator.SetBool("IsGliding", isGliding);
+            cachedIsGliding = isGliding;
+        }
     }
 
     // ======================================================
@@ -1126,8 +1399,37 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     {
         doubleJumpCharges = maxDoubleJumpCharges;
         airDashCharges = maxAirDashCharges;
+        
+        // Reseta o estado de pulo e queda para permitir um novo pulo normal ao sair do rail
+        isJumping = false;
+        isFalling = false;
+        canJumpAfterGrind = true;
+
         if (showDebugInfo)
-            Debug.Log($"✅ Cargas aéreas resetadas no grind. Double Jump: {doubleJumpCharges}, Air Dash: {airDashCharges}");
+            Debug.Log($"✅ Cargas aéreas e estados de pulo resetados. Double Jump: {doubleJumpCharges}, Air Dash: {airDashCharges}");
+    }
+
+    // Método para executar um pulo forçado (usado pelo Rail)
+    public void ExecuteJump(Vector3 velocity)
+    {
+        moveDirection.y = velocity.y;
+        
+        // Se a velocidade tiver componentes horizontais, aplica como externalVelocity
+        Vector3 horizontalVelocity = new Vector3(velocity.x, 0, velocity.z);
+        if (horizontalVelocity.magnitude > 0)
+        {
+            AddExternalVelocity(horizontalVelocity);
+        }
+
+        isJumping = true;
+        isFalling = false;
+        canJumpAfterGrind = false; // Consome o pulo normal
+        
+        if (enableJumpParticles && jumpParticles != null)
+            StartJumpParticles();
+            
+        if (showDebugInfo)
+            Debug.Log("🚀 Pulo executado via script externo (Rail)");
     }
 
     // ======================================================
@@ -1216,13 +1518,13 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     {
         if (airTrickParticles == null) return;
 
-        if (!airTrickParticles.isPlaying)
-        {
-            airTrickParticles.Play();
+        // Para e limpa as partículas antes de tocar novamente para garantir que reiniciem instantaneamente
+        // Isso resolve o problema de não ativar quando executado em sucessão rápida
+        airTrickParticles.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+        airTrickParticles.Play();
 
-            if (showDebugInfo)
-                Debug.Log("Particulas de air trick iniciadas.");
-        }
+        if (showDebugInfo)
+            Debug.Log("Particulas de air trick iniciadas (reiniciadas).");
     }
 
     private void StopAirTrickParticles()
@@ -1231,16 +1533,12 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
         if (airTrickParticles.isPlaying)
         {
+            // Para de emitir novas partículas, mas deixa as existentes sumirem aos poucos
             airTrickParticles.Stop();
 
             if (showDebugInfo)
                 Debug.Log("Particulas de air trick paradas.");
         }
-    }
-
-    public void ResetMovementDirection()
-    {
-        moveDirection = Vector3.zero;
     }
 
     private void StartWallRunParticles()
@@ -1286,6 +1584,37 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         }
     }
 
+private void StartGlideParticles()
+    {
+        if (glideParticles == null) return;
+
+        // Para e limpa as partículas antes de tocar novamente para garantir que reiniciem instantaneamente
+        glideParticles.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+        glideParticles.Play();
+
+        if (showDebugInfo)
+            Debug.Log("Partículas de glide iniciadas (reiniciadas).");
+    }
+
+    private void StopGlideParticles()
+    {
+        if (glideParticles == null) return;
+
+        if (glideParticles.isPlaying)
+        {
+            // Para de emitir novas partículas, mas deixa as existentes sumirem aos poucos (comportamento padrão do Stop)
+            glideParticles.Stop();
+
+            if (showDebugInfo)
+                Debug.Log("Partículas de glide paradas.");
+        }
+    }
+
+    public void ResetMovementDirection()
+    {
+        moveDirection = Vector3.zero;
+    }
+
     // ======================================================
     // DEBUG E PROPRIEDADES
     // ======================================================
@@ -1299,16 +1628,22 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         GUI.Label(new Rect(10, 50, 300, 20), $"Animator Busy: {animatorBusy}");
         GUI.Label(new Rect(10, 70, 300, 20), $"Idle Timer: {idleTimer:F1}");
         GUI.Label(new Rect(10, 90, 300, 20), $"Rotation Locked: {isRotationLocked} ({rotationLockTimer:F1}s)");
-        GUI.Label(new Rect(10, 110, 300, 20), $"Height: {GetCurrentHeight():F1}m / Min: {minHeightForAirTrick}m");
+        GUI.Label(new Rect(10, 110, 300, 20), $"Height: {GetCurrentHeight():F1}m / Min Air Trick: {minHeightForAirTrick}m / Min Glide: {minHeightForGlide}m");
         GUI.Label(new Rect(10, 130, 300, 20), $"Air Trick Cooldown: {airTrickCooldownTimer:F2}s");
         GUI.Label(new Rect(10, 150, 300, 20), $"Air Dash: {isDashing} (Charges: {airDashCharges}/{maxAirDashCharges})");
         GUI.Label(new Rect(10, 170, 300, 20), $"Double Jump: (Charges: {doubleJumpCharges}/{maxDoubleJumpCharges})");
         GUI.Label(new Rect(10, 190, 300, 20), $"On Rail: {(railRide != null && railRide.isGrinding ? "Yes" : "No")}");
         GUI.Label(new Rect(10, 210, 300, 20), $"Stomp: {isStomping}");
+GUI.Label(new Rect(10, 230, 300, 20), $"Glide: {isGliding}");
+        if (glideCooldownTimer > 0)
+        {
+            GUI.Label(new Rect(10, 250, 300, 20), $"Glide Cooldown: {glideCooldownTimer:F2}s");
+        }
     }
 
     public float CurrentSpeed => currentSpeed;
     public bool IsGrounded => controller.isGrounded;
     public bool IsRotationLocked => isRotationLocked;
     public bool IsStomping => isStomping;
+    public bool IsGliding => isGliding;
 }

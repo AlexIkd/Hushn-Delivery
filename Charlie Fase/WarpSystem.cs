@@ -13,6 +13,7 @@ public class WarpSystem : MonoBehaviour
     [SerializeField] private Animator animator;
     private CharacterController characterController;
     private MonoBehaviour movementScript;
+    private PlayerRailRide_SonicStyle_Spline grindScript;
 
     [Header("Configurações de Detecção")]
     [SerializeField] private float maxWarpDistance = 50f;
@@ -76,6 +77,7 @@ public class WarpSystem : MonoBehaviour
         
         characterController = playerTransform.GetComponent<CharacterController>();
         movementScript = playerTransform.GetComponent("PlayerMovement_FrontiersStyle") as MonoBehaviour;
+        grindScript = playerTransform.GetComponent<PlayerRailRide_SonicStyle_Spline>();
         if (animator == null) animator = playerTransform.GetComponent<Animator>();
 
         playerRenderers = playerTransform.GetComponentsInChildren<SkinnedMeshRenderer>();
@@ -101,9 +103,10 @@ public class WarpSystem : MonoBehaviour
     {
         if (isPreparing || isHanging || isWarping)
         {
-            // REFORÇO: Desativa a física e o movimento durante QUALQUER estado de warp
+            // REFORÇO: Desativa a física, o movimento e o grind durante QUALQUER estado de warp
             if (characterController != null && characterController.enabled) characterController.enabled = false;
             if (movementScript != null && movementScript.enabled) movementScript.enabled = false;
+            if (grindScript != null && grindScript.enabled) grindScript.enabled = false;
 
             // Trava a posição explicitamente para evitar drift ou queda
             if (isPreparing)
@@ -125,6 +128,7 @@ public class WarpSystem : MonoBehaviour
         // Reativa apenas quando não estiver em nenhum estado de warp
         if (characterController != null && !characterController.enabled) characterController.enabled = true;
         if (movementScript != null && !movementScript.enabled) movementScript.enabled = true;
+        if (grindScript != null && !grindScript.enabled) grindScript.enabled = true;
 
         FindBestWarpPoint();
         HandleInput();
@@ -226,6 +230,33 @@ public class WarpSystem : MonoBehaviour
         // Desativa imediatamente para evitar queda no primeiro frame
         if (characterController != null) characterController.enabled = false;
         if (movementScript != null) movementScript.enabled = false;
+
+        // Garante a saída do estado de grind se o jogador estiver nele
+        if (grindScript != null)
+        {
+            if (grindScript.isGrinding)
+            {
+                // CORREÇÃO: Usando Reflection para chamar ExitRail que está inacessível
+                try
+                {
+                    MethodInfo exitRailMethod = grindScript.GetType().GetMethod("ExitRail", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (exitRailMethod != null)
+                    {
+                        exitRailMethod.Invoke(grindScript, new object[] { false });
+                    }
+                    else
+                    {
+                        Debug.LogWarning("Método ExitRail não encontrado em PlayerRailRide_SonicStyle_Spline");
+                    }
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogWarning("Erro ao chamar ExitRail via Reflection: " + e.Message);
+                }
+            }
+            grindScript.enabled = false; // Desativa o script para evitar reentrada automática
+        }
+
         ResetMovementVelocity();
 
         if (swordParticle != null) swordParticle.Play();

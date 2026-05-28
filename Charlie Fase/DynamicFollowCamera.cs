@@ -71,6 +71,23 @@ public class DynamicFollowCamera : MonoBehaviour
     [SerializeField] private float wallDashShakeFrequency = 25f;
     [SerializeField] private bool enableWallDashShake = true;
 
+    // ✅ NOVO: Configurações de Slide Tilt
+    [Header("Configurações Durante Slide")]
+    public float slideFOV = 75f; // NOVO: FOV customizável para o slide
+    public float slideTiltAngle = 15.0f; // Ângulo de inclinação da câmera durante o slide
+    public float slideTiltSpeed = 7.0f; // Velocidade de inclinação da câmera durante o slide
+    public float slideLensDistortion = -0.3f; // NOVO: Intensidade do efeito Olho de Gato
+    public float distortionTransitionSpeed = 5f; // NOVO: Velocidade de transição da distorção
+
+    [Header("Configurações Durante Slide (Motion Blur)")]
+    public float slideMotionBlurIntensity = 0.5f; // Intensidade do Motion Blur durante o slide
+    public float motionBlurTransitionSpeed = 7.0f; // Velocidade de transição do Motion Blur
+
+    [Header("Configurações de Pós-Processamento Adicionais")]
+    public float slideChromaticAberration = 0.2f; // Intensidade da Aberração Cromática no slide
+    public float slideVignetteIntensity = 0.3f; // Intensidade da Vinheta no slide
+    public float ppTransitionSpeed = 5.0f; // Velocidade de transição para estes efeitos
+
     private float currentDistance;
     private float currentX = 0.0f;
     private float currentY = 0.0f;
@@ -79,6 +96,10 @@ public class DynamicFollowCamera : MonoBehaviour
     private float collisionDistance;
     private Camera cam;
     private float currentFOV;
+    private float currentDistortion = 0f; // NOVO: Valor atual da distorção
+    private float currentMotionBlur = 0f; // NOVO: Valor atual do Motion Blur
+    private float currentChromaticAberration = 0f;
+    private float currentVignette = 0f;
 
     // ✅ NOVO: Variáveis de Camera Shake
     private float shakeTimer = 0f;
@@ -91,6 +112,13 @@ public class DynamicFollowCamera : MonoBehaviour
     private PlayerRailRide_SonicStyle_Spline railRideSpline;
     private PlayerRailRide_SonicStyle_Spline railRide;
     private WarpSystem warpSystem;
+    private SlopeSlideSystem slopeSlideSystem; // Referência ao novo sistema de slide
+
+    // ✅ NOVO: Propriedade pública para ler a distorção atual
+    public float CurrentLensDistortion => currentDistortion;
+    public float CurrentMotionBlur => currentMotionBlur;
+    public float CurrentChromaticAberration => currentChromaticAberration;
+    public float CurrentVignette => currentVignette;
 
     void Start()
     {
@@ -106,6 +134,7 @@ public class DynamicFollowCamera : MonoBehaviour
             railRideSpline = target.GetComponent<PlayerRailRide_SonicStyle_Spline>();
             if (railRideSpline == null) railRide = target.GetComponent<PlayerRailRide_SonicStyle_Spline>();
             warpSystem = target.GetComponent<WarpSystem>();
+            slopeSlideSystem = target.GetComponent<SlopeSlideSystem>(); // Obtém a referência ao SlopeSlideSystem
 
             currentDistance = baseDistance;
             collisionDistance = baseDistance;
@@ -144,6 +173,7 @@ public class DynamicFollowCamera : MonoBehaviour
         bool isWallRunning = IsPlayerWallRunning();
         bool isBoosting = IsPlayerBoosting();
         bool isWarping = IsPlayerWarping();
+        bool isSliding = IsPlayerSliding(); // Verifica se o jogador está deslizando
 
         // --- FOV e Altura ---
         float targetHeight = isGrinding ? grindHeight : height;
@@ -156,6 +186,7 @@ public class DynamicFollowCamera : MonoBehaviour
         
         // Lógica de FOV com prioridade de estados
         float targetFOV = normalFOV;
+        float targetDistortion = 0f; // NOVO: Padrão sem distorção
         
         if (isWarping)
         {
@@ -173,6 +204,11 @@ public class DynamicFollowCamera : MonoBehaviour
         {
             targetFOV = wallRunFOV;
         }
+        else if (isSliding) // Prioridade para o FOV do slide
+        {
+            targetFOV = slideFOV; // NOVO: Agora usa o FOV configurável do slide
+            targetDistortion = slideLensDistortion; // NOVO: Ativa o olho de gato
+        }
         else if (isMovingFast)
         {
             // NOVO: Se está se movendo rápido, aumentar FOV
@@ -182,10 +218,23 @@ public class DynamicFollowCamera : MonoBehaviour
         currentFOV = Mathf.Lerp(currentFOV, targetFOV, Time.deltaTime * fovTransitionSpeed);
         if (cam != null) cam.fieldOfView = currentFOV;
 
+        // NOVO: Suavização da Distorção (Olho de Gato)
+        currentDistortion = Mathf.Lerp(currentDistortion, targetDistortion, Time.deltaTime * distortionTransitionSpeed);
+
+        // NOVO: Suavização do Motion Blur
+        float targetMotionBlur = isSliding ? slideMotionBlurIntensity : 0f;
+        currentMotionBlur = Mathf.Lerp(currentMotionBlur, targetMotionBlur, Time.deltaTime * motionBlurTransitionSpeed);
+
+        // NOVO: Suavização de Aberração Cromática e Vinheta
+        float targetChromatic = isSliding ? slideChromaticAberration : 0f;
+        float targetVignette = isSliding ? slideVignetteIntensity : 0f;
+        currentChromaticAberration = Mathf.Lerp(currentChromaticAberration, targetChromatic, Time.deltaTime * ppTransitionSpeed);
+        currentVignette = Mathf.Lerp(currentVignette, targetVignette, Time.deltaTime * ppTransitionSpeed);
+
         // --- Rotação Horizontal (Eixo Y) ---
         bool hasMouseInput = Mathf.Abs(Input.GetAxis("Mouse X")) > 0.1f || Mathf.Abs(Input.GetAxis("Mouse Y")) > 0.1f;
         
-        if (!hasMouseInput && !isGrinding)
+        if (!hasMouseInput && !isGrinding && !isSliding) // Não auto-centra se estiver deslizando
         {
             currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed);
         }
@@ -194,13 +243,33 @@ public class DynamicFollowCamera : MonoBehaviour
             currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed * grindAutoCenterStrength);
             currentY = Mathf.Lerp(currentY, 10f, Time.deltaTime * autoCenterSpeed * grindAutoCenterStrength);
         }
+        else if (isSliding) // Auto-centra suavemente para a frente durante o slide
+        {
+             currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed * 0.5f); // Mais suave
+             currentY = Mathf.Lerp(currentY, 15f, Time.deltaTime * autoCenterSpeed * 0.5f); // Mantém altura padrão
+        }
 
-        // --- Lógica de WallRun ---
+        // --- Lógica de WallRun e Slide Tilt ---
         float targetYawOffset = isWallRunning ? (IsPlayerOnLeftWall() ? wallRunYawOffset : -wallRunYawOffset) : 0f;
-        float targetTilt = isWallRunning ? (IsPlayerOnLeftWall() ? wallRunTiltAmount : -wallRunTiltAmount) : (isGrinding ? target.right.y * grindTiltAmount : 0f);
+        float targetTilt = 0f;
+
+        if (isWallRunning)
+        {
+            targetTilt = IsPlayerOnLeftWall() ? wallRunTiltAmount : -wallRunTiltAmount;
+        }
+        else if (isGrinding)
+        {
+            targetTilt = target.right.y * grindTiltAmount;
+        }
+        else if (isSliding) // Aplica o tilt do slide
+        {
+            // O tilt pode ser fixo ou baseado na direção lateral do slide
+            // Por enquanto, um tilt fixo para dar a sensação de velocidade
+            targetTilt = slideTiltAngle; // Ou -slideTiltAngle dependendo da direção desejada
+        }
 
         currentWallRunYaw = Mathf.Lerp(currentWallRunYaw, targetYawOffset, Time.deltaTime * wallRunYawSpeed);
-        currentTilt = Mathf.Lerp(currentTilt, targetTilt, Time.deltaTime * (isWallRunning ? wallRunTiltSpeed : 5f));
+        currentTilt = Mathf.Lerp(currentTilt, targetTilt, Time.deltaTime * (isWallRunning ? wallRunTiltSpeed : (isSliding ? slideTiltSpeed : 5f)));
 
         // --- Construção da Rotação Final ---
         Quaternion finalRotation = Quaternion.Euler(currentY, currentX, 0);
@@ -278,7 +347,7 @@ public class DynamicFollowCamera : MonoBehaviour
     {
         if (playerMovement != null)
         {
-            return playerMovement.CurrentSpeed;
+            return playerMovement.currentSpeed; // Usar currentSpeed do PlayerMovement_FrontiersStyle
         }
         return 0f;
     }
@@ -299,8 +368,8 @@ public class DynamicFollowCamera : MonoBehaviour
 
     private bool IsPlayerGrinding()
     {
-        if (railRideSpline != null) return railRideSpline.IsGrinding;
-        if (railRide != null) return railRide.IsGrinding;
+        if (railRideSpline != null) return railRideSpline.isGrinding;
+        if (railRide != null) return railRide.isGrinding;
         return false;
     }
 
@@ -332,6 +401,13 @@ public class DynamicFollowCamera : MonoBehaviour
     private bool IsPlayerWarping()
     {
         if (warpSystem != null) return warpSystem.IsWarping;
+        return false;
+    }
+
+    // NOVO: Método para verificar se o jogador está deslizando
+    private bool IsPlayerSliding()
+    {
+        if (slopeSlideSystem != null) return slopeSlideSystem.IsSliding();
         return false;
     }
 

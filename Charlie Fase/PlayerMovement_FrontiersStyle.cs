@@ -374,6 +374,18 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
                 cameraRight.Normalize();
 
                 desiredMoveDirection = (cameraForward * verticalInput + cameraRight * horizontalInput).normalized;
+
+                // Se estiver no chão, projeta a direção de movimento na superfície da rampa.
+                // Isso é crucial para que o jogador se mova *ao longo* da rampa e não "quique".
+                if (controller.isGrounded)
+                {
+                    RaycastHit hit;
+                    if (Physics.Raycast(cachedTransform.position + Vector3.up * 0.1f, Vector3.down, out hit, controller.height / 2f + 0.3f, groundMask))
+                    {
+                        desiredMoveDirection = Vector3.ProjectOnPlane(desiredMoveDirection, hit.normal).normalized;
+                    }
+                }
+
                 desiredMove = desiredMoveDirection * currentSpeed;
 
                 if (controller.isGrounded && lastMoveDirection.sqrMagnitude > 0.01f && !animatorBusy)

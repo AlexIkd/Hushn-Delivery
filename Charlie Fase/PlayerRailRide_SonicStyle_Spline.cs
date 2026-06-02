@@ -69,9 +69,12 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
     private float boostTimer = 0f;
     private float boostCooldownTimer = 0f;
     private bool hasTriggeredEarlyJump = false; // Flag para evitar multiplos pulos
-    private float reEnterCooldownTimer = 0f; // Timer para cooldown de reentrada no grind
+        private float reEnterCooldownTimer = 0f; // Timer para cooldown de reentrada no grind
+    private float collisionRestoreTimer = 0f; // Timer para restaurar a colisao apos sair do rail
+    private Rail_SonicStyle_Spline lastRail; // Armazena o ultimo rail para restaurar colisao
     
     // Rail atual (usando spline)
+
     private Rail_SonicStyle_Spline currentRail;
     private float currentT = 0f;
     private bool movingForward = true;
@@ -157,6 +160,17 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         if (reEnterCooldownTimer > 0)
         {
             reEnterCooldownTimer -= Time.deltaTime;
+        }
+
+        // ✅ NOVO: Gerencia a restauracao da colisao
+        if (collisionRestoreTimer > 0)
+        {
+            collisionRestoreTimer -= Time.deltaTime;
+            if (collisionRestoreTimer <= 0 && lastRail != null)
+            {
+                IgnoreRailCollision(lastRail, false);
+                lastRail = null;
+            }
         }
 
         if (isGrinding)
@@ -260,12 +274,9 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
             }
         }
         
-        // Pulo para sair do rail
-        if (Input.GetButtonDown("Jump"))
-        {
-            ExitRail(true);
-        }
-        
+        // Pulo para sair do rail agora e gerenciado pelo PlayerMovement_FrontiersStyle
+        // para garantir a sincronia do pulo padrao.
+
         // Boost
         if (Input.GetKey(KeyCode.LeftShift) && !isBoosting && boostCooldownTimer <= 0)
         {
@@ -677,6 +688,9 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
             // Salva estado de rotacao
             wasRotationLocked = movement.IsRotationLocked;
             movement.LockRotation(false);
+
+            // Desabilita a gravidade acumulada ao entrar no rail
+            movement.ResetVerticalVelocity();
         }
         else
         {
@@ -761,20 +775,19 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         if (!isGrinding) return;
         currentRail?.DeactivateCinematicCamera();
 
-
-
         isGrinding = false;
         isBoosting = false;
         isSwitchingRail = false;
 
         float finalGrindTime = grindTime;
         
-        // Restaura colisao com o rail atual
+        // ✅ NOVO: Cooldown de colisao
         if (currentRail != null)
         {
-            IgnoreRailCollision(currentRail, false);
+            lastRail = currentRail;
+            collisionRestoreTimer = 0.2f;
         }
-        
+
         // Restaura colisao com o rail de destino se estava trocando
         if (targetRail != null)
         {
@@ -818,12 +831,51 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         }
     }
 
-    private void ExitRail(bool jumpOff)
+        public void ExitRailForced()
     {
         if (!isGrinding) return;
         currentRail?.DeactivateCinematicCamera();
 
+        isGrinding = false;
+        isBoosting = false;
+        isSwitchingRail = false;
+        
+        // ✅ NOVO: Nao restaura a colisao imediatamente para evitar "agarre"
+        if (currentRail != null)
+        {
+            lastRail = currentRail;
+            collisionRestoreTimer = 0.2f; // Mantem a colisao ignorada por 0.2 segundos
+        }
+        
+        // Restaura colisao com o rail de destino se estava trocando
+        if (targetRail != null)
+        {
+            IgnoreRailCollision(targetRail, false);
+            targetRail = null;
+        }
+        
+        // Para animacao de grind
+        if (animator != null && !string.IsNullOrEmpty(grindAnimationName))
+        {
+            animator.SetBool(grindAnimationName, false);
+        }
+        
+        // Para particulas
+        StopGrindParticles();
+        StopBoostParticles();
+        StopSwitchGrindParticles();
 
+        currentRail = null;
+        grindTime = 0f;
+        hasTriggeredEarlyJump = false;
+        reEnterCooldownTimer = reEnterCooldown;
+    }
+
+    private void ExitRail(bool jumpOff)
+    {
+        if (!isGrinding) return;
+
+        currentRail?.DeactivateCinematicCamera();
 
         isGrinding = false;
         isBoosting = false;
@@ -831,12 +883,13 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
 
         float finalGrindTime = grindTime;
         
-        // Restaura colisao com o rail atual
+        // ✅ NOVO: Cooldown de colisao
         if (currentRail != null)
         {
-            IgnoreRailCollision(currentRail, false);
+            lastRail = currentRail;
+            collisionRestoreTimer = 0.2f;
         }
-        
+
         // Restaura colisao com o rail de destino se estava trocando
         if (targetRail != null)
         {
@@ -898,20 +951,19 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         if (!isGrinding) return;
         currentRail?.DeactivateCinematicCamera();
 
-
-
         isGrinding = false;
         isBoosting = false;
         isSwitchingRail = false;
 
         float finalGrindTime = grindTime;
         
-        // Restaura colisao com o rail
+        // ✅ NOVO: Cooldown de colisao
         if (currentRail != null)
         {
-            IgnoreRailCollision(currentRail, false);
+            lastRail = currentRail;
+            collisionRestoreTimer = 0.2f;
         }
-        
+
         // Restaura colisao com o rail de destino se estava trocando
         if (targetRail != null)
         {

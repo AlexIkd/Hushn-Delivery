@@ -55,15 +55,19 @@ public class ParkourSystem : MonoBehaviour
     [SerializeField] private float speedMultiplier = 1.0f;
 
     [Header("Smoothness & Inertia Settings")]
-    [SerializeField] private float positionSmoothSpeed = 8f;
-    [SerializeField] private float rotationSmoothSpeed = 6f;
+    [SerializeField] private float positionSmoothSpeed = 12f; // Aumentado para resposta mais rápida mas suave
+    [SerializeField] private float rotationSmoothSpeed = 8f;
     [SerializeField] private float inertiaDecay = 0.95f;
     [SerializeField] private float velocityDamping = 0.92f;
     [SerializeField] private AnimationCurve movementCurve = AnimationCurve.EaseInOut(0, 0, 1, 1);
     [SerializeField] private bool useAdaptiveSmoothing = true;
+    
+    [Header("Proximity & Landing")]
+    [SerializeField] private float targetReachThreshold = 0.1f;
 
     [Header("Debug")]
     [SerializeField] private bool debugMode = false;
+
 
     private bool isParkourActive = false;
     private float originalControllerHeight;
@@ -247,46 +251,40 @@ public class ParkourSystem : MonoBehaviour
         Vector3 smoothVelocity = Vector3.zero;
         Vector3 cachedForward = cachedTransform.forward;
 
+        Vector3 currentVelocity = Vector3.zero;
         while (elapsedTime < duration)
         {
             elapsedTime += Time.deltaTime;
             float t = Mathf.Clamp01(elapsedTime * inverseDuration);
-
-            // ✅ OTIMIZADO: Avalia curva uma vez
             float easedT = movementCurve.Evaluate(t);
 
-            // Calcular posição na curva de Bezier
-            Vector3 targetPos = CalculateBezierPoint(easedT, bezierP0, bezierP1, bezierP2);
+            // 1. Calcula a posição teórica na curva de Bezier
+            Vector3 bezierTarget = CalculateBezierPoint(easedT, bezierP0, bezierP1, bezierP2);
+            
 
-            // Aplicar suavidade com inércia
-            Vector3 movement = targetPos - cachedTransform.position;
 
-            // ✅ OTIMIZADO: Suavidade adaptativa sem Lerp aninhado
-            float adaptiveSmooth = positionSmoothSpeed;
-            if (useAdaptiveSmoothing)
+            // 3. MOVIMENTO ULTRA-FLUIDO: Em vez de setar a posição, usamos Move() com interpolação suave
+            // Isso permite que o CharacterController resolva colisões laterais enquanto segue a curva
+            Vector3 nextPos = Vector3.SmoothDamp(cachedTransform.position, bezierTarget, ref currentVelocity, 0.05f);
+            Vector3 moveDiff = nextPos - cachedTransform.position;
+            
+            if (controller.enabled)
             {
-                float speedFactor = Mathf.Clamp01(parkourStartSpeed / 15f);
-                adaptiveSmooth *= (1f - speedFactor * 0.5f);
+                controller.Move(moveDiff);
             }
 
-            // Aplicar damping de velocidade
-            movement = Vector3.Lerp(lastFrameVelocity, movement, Time.deltaTime * adaptiveSmooth);
-            lastFrameVelocity = movement;
-
-            controller.Move(movement);
-
-            // ✅ OTIMIZADO: Rotação suave sem normalizar sempre
+            // 4. ROTAÇÃO ORGÂNICA
             Quaternion targetRotation = Quaternion.LookRotation(cachedForward);
-            float rotSmooth = Mathf.Lerp(rotationSmoothSpeed, rotationSmoothSpeed * 1.5f, easedT);
-            cachedTransform.rotation = Quaternion.Lerp(cachedTransform.rotation, targetRotation, Time.deltaTime * rotSmooth);
+            cachedTransform.rotation = Quaternion.Slerp(cachedTransform.rotation, targetRotation, Time.deltaTime * rotationSmoothSpeed);
 
-            lastPos = cachedTransform.position;
             yield return null;
         }
 
+        // --- FINALIZAÇÃO SUAVE ---
         controller.height = originalControllerHeight;
         controller.center = originalControllerCenter;
-        cachedTransform.position = endPos;
+
+
 
         // Aplicar inércia residual
         velocityInertia *= inertiaDecay;

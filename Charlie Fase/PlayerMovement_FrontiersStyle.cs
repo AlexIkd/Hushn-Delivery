@@ -14,6 +14,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [SerializeField] private float airAcceleration = 5f; // Taxa de aceleração reduzida no ar
     [SerializeField] private float deceleration = 15f;
     [SerializeField] private float turnSpeed = 500f;
+    [SerializeField] private float rotationSmoothing = 10f; // Controla a fluidez da curva
 
     [Header("Quick Turn")]
     [SerializeField] private float quickTurnThreshold = 5.0f;
@@ -60,7 +61,6 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [SerializeField] private LayerMask groundMask;
     [SerializeField] private float wallDistance = 1.0f;
     [SerializeField] private LayerMask railLayer; // Nova Layer para Rails
-    [SerializeField] private float railProximityRadius = 3f; // Raio para verificar proximidade de rails
     [SerializeField] private float maxWallRunAngle = 45f;
 
     [Header("Air Trick Settings")]
@@ -99,6 +99,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [SerializeField] private float minGlideSpeed = 10f; // Velocidade mínima do glide
     [SerializeField] private float glideGraceTime = 0.15f; // Tempo de carência para não desativar imediatamente
     [SerializeField] private float minHeightForGlide = 5f; // Altura mínima para ativar o glide
+    
     [SerializeField] private ParticleSystem glideParticles;
     [SerializeField] private float glideCooldown = 3.0f;
     private float glideCooldownTimer = 0f;
@@ -112,7 +113,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private float wallRunRecoveryTimer = 0f;
 
     // Estados internos
-    [HideInInspector] public bool IsWallRunning => isWallRunning;
+    [HideInInspector] public bool IsGliding => isGliding;
+    [HideInInspector] public bool IsGrabbingBar { get; set; } = false; // Nova propriedade para indicar se o jogador está agarrado à barra
+    public bool IsWallRunning => isWallRunning; // Propriedade pública para verificar se está em wall run
     [HideInInspector] public bool OnLeftWall => onLeftWall;
     [HideInInspector] public bool OnRightWall => onRightWall;
     private bool isWallRunning = false;
@@ -133,14 +136,52 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private Transform cameraTransform;
     private Transform cachedTransform;
     private PlayerRailRide_SonicStyle_Spline railRide;
-    private bool isNearRail = false; // Novo estado para indicar proximidade de rail
-    
+    private bool wasGrindingLastFrame = false; // Rastreia o estado anterior para detectar saída do rail
+
+    private void ExecuteRailJump()
+    {
+        // Avisa o sistema de Rail que o jogador quer sair (pular)
+        if (railRide != null)
+        {
+            railRide.ExitRailForced();
+        }
+
+        // Força o estado de pulo padrão
+        isGrounded = false; // Garante que o estado de chão seja limpo no pulo
+        moveDirection.y = jumpForce;
+        isJumping = true;
+        isFalling = false;
+        canJumpAfterGrind = false;
+
+        // Reseta as cargas para permitir pulo duplo/dash após o pulo do rail
+        doubleJumpCharges = maxDoubleJumpCharges;
+        airDashCharges = maxAirDashCharges;
+        wasGrindingLastFrame = false; // Garante que a lógica de saída do Update não rode duas vezes
+
+        if (animator != null)
+        {
+            animator.SetBool("IsJumping", true);
+            animator.SetBool("IsGrounded", false);
+            animator.SetTrigger("Jump"); // Se houver um trigger específico
+        }
+
+        if (enableJumpParticles && jumpParticles != null)
+        {
+            StartJumpParticles();
+        }
+
+        if (showDebugInfo) Debug.Log("🚀 Pulo executado diretamente do Rail!");
+    }
+
     // ✅ NOVO: Referência ao WallDashJump para bloquear Wall Run
     private WallDashJump wallDashJump;
 
     // Movimento
     private Vector3 moveDirection = Vector3.zero;
     private Vector3 lastMoveDirection = Vector3.zero;
+    // Controla se existe input direcional real neste frame.
+    // Isso impede que a rotação continue sendo recalculada durante a desaceleração ao soltar o direcional.
+    private bool hasMovementInput = false;
     public float currentSpeed;
     private float originalSpeedBeforeQuickTurn;
     private float minSpeedDuringQuickTurn;
@@ -242,13 +283,50 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         }
     }
 
-    void Update()
+        void Update()
     {
-        // ✅ OTIMIZADO: Early exit se estiver no rail
-        if (railRide != null && railRide.isGrinding)
+        // ✅ NOVO: Detecta saída do rail para resetar pulos
+        if (railRide != null)
         {
-            if (isGliding) StopGlide(); // Certifica que o glide é cancelado ao entrar no rail
+            if (railRide.isGrinding)
+            {
+                if (isGliding) StopGlide();
+                
+                // ✅ NOVO: Garante que o estado de chão seja limpo imediatamente ao entrar/estar no rail
+                // Isso evita que o pulo padrão seja ignorado por causa de um isGrounded "sujo" vindo do frame anterior
+                isGrounded = false;
+                
+                wasGrindingLastFrame = true;
+
+                // ✅ NOVO: Pulo direto do Rail
+                if (Input.GetButtonDown("Jump") && !animatorBusy)
+                {
+                    ExecuteRailJump();
+                }
+                return;
+            }
+
+            else if (wasGrindingLastFrame)
+            {
+                // Acabou de sair do rail: reseta as cargas e permite pulo normal
+                canJumpAfterGrind = true;
+                doubleJumpCharges = maxDoubleJumpCharges;
+                airDashCharges = maxAirDashCharges;
+                wasGrindingLastFrame = false;
+                if (showDebugInfo) Debug.Log("✅ Saiu do Rail: Pulos resetados!");
+            }
+        }
+
+        // Bloqueia o movimento normal se estiver agarrado à barra
+        if (IsGrabbingBar)
+        {
             return;
+        }
+
+        // Timer de bloqueio após lançamento da barra
+        if (barLaunchLockTimer > 0)
+        {
+            barLaunchLockTimer -= Time.deltaTime;
         }
 
         // 1. Pré-processamento e Verificações de Estado
@@ -339,7 +417,7 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
 
     private void HandleInputAndMovement()
     {
-        if (recoveringFromWallRun || isDashing) return; // Removido isGliding para permitir input durante o glide
+        if (recoveringFromWallRun || isDashing || barLaunchLockTimer > 0) return; // Bloqueia input se estiver em lock de lançamento
 
         float horizontalInput = Input.GetAxis("Horizontal");
         float verticalInput = Input.GetAxis("Vertical");
@@ -350,7 +428,9 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
         inputVector.z = verticalInput;
         float inputMagnitude = inputVector.magnitude;
 
-        if (inputMagnitude > 0.1f)
+        hasMovementInput = inputMagnitude > 0.1f;
+
+        if (hasMovementInput)
         {
             if (isProlongedIdle)
             {
@@ -407,8 +487,20 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
         else
         {
             currentSpeed = Mathf.MoveTowards(currentSpeed, 0, deceleration * Time.deltaTime);
-            moveDirection.x = Mathf.MoveTowards(moveDirection.x, 0, deceleration * Time.deltaTime);
-            moveDirection.z = Mathf.MoveTowards(moveDirection.z, 0, deceleration * Time.deltaTime);
+
+            // Mantém a última direção real do jogador durante a desaceleração.
+            // Antes, cada eixo era zerado separadamente; isso fazia uma diagonal "escorregar"
+            // visualmente para frente/trás/esquerda/direita quando um eixo chegava a zero antes do outro.
+            if (lastMoveDirection.sqrMagnitude > 0.01f)
+            {
+                moveDirection.x = lastMoveDirection.x * currentSpeed;
+                moveDirection.z = lastMoveDirection.z * currentSpeed;
+            }
+            else
+            {
+                moveDirection.x = Mathf.MoveTowards(moveDirection.x, 0, deceleration * Time.deltaTime);
+                moveDirection.z = Mathf.MoveTowards(moveDirection.z, 0, deceleration * Time.deltaTime);
+            }
         }
     }
 
@@ -427,7 +519,6 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
         }
 
         // Nova verificação de proximidade do rail
-        isNearRail = Physics.CheckSphere(cachedTransform.position, railProximityRadius, railLayer);
 
         if (isGrounded)
         {
@@ -438,12 +529,8 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
             // O glideGraceTimer é para evitar desativações prematuras logo após um pulo, por exemplo.
             if (isGliding && glideGraceTimer <= 0f) StopGlide();
         }
-        else if (isNearRail && !isJumping)
-        {
-            // Se estiver perto de um rail e não estiver pulando ativamente, permite o pulo normal
-            canJumpAfterGrind = true;
-        }
     }
+
 
     // ======================================================
     // WALL RUN
@@ -701,6 +788,50 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
         animatorBusy = false;
     }
 
+    // Variáveis para controle de lançamento da barra
+    private float barLaunchLockTimer = 0f;
+    private const float BAR_LAUNCH_LOCK_DURATION = 0.5f;
+
+    // Método para receber o impulso da barra horizontal
+    public void SetMovementFromBar(Vector3 velocity)
+    {
+        // Força a velocidade diretamente
+        moveDirection = velocity;
+        
+        // Calcula a velocidade horizontal para o sistema de movimento
+        Vector3 horizontalVel = new Vector3(velocity.x, 0, velocity.z);
+        currentSpeed = horizontalVel.magnitude;
+        
+        if (velocity.sqrMagnitude > 0.1f)
+        {
+            // Estado de pulo forçado
+            isJumping = true;
+            isFalling = false;
+            barLaunchLockTimer = BAR_LAUNCH_LOCK_DURATION;
+            
+            // Se houver velocidade vertical positiva, garante que o estado de pulo seja reconhecido pelo Animator
+            if (velocity.y > 0.1f)
+            {
+                if (animator != null)
+                {
+                    animator.SetBool("IsJumping", true);
+                    animator.SetBool("IsGrounded", false);
+                }
+            }
+
+            // Faz o jogador olhar para a direção do lançamento
+            if (horizontalVel.sqrMagnitude > 0.01f)
+            {
+                transform.rotation = Quaternion.LookRotation(horizontalVel);
+                lastMoveDirection = horizontalVel.normalized;
+            }
+        }
+        
+        // Reset de cargas de pulo ao usar a barra
+        airDashCharges = maxAirDashCharges;
+        doubleJumpCharges = maxDoubleJumpCharges;
+    }
+
     private void ApplyQuickTurnDeceleration()
     {
         float targetSpeed = Mathf.Max(minSpeedDuringQuickTurn, 0);
@@ -879,26 +1010,41 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
 
         if (animatorBusy) return;
 
+        // Se não há input direcional, não recalcula a rotação usando a velocidade residual.
+        // Assim, ao soltar uma diagonal, o jogador permanece olhando para a última diagonal usada.
+        if (!hasMovementInput)
+        {
+            rotationUpdateTimer = ROTATION_UPDATE_INTERVAL; // força atualizar o alvo assim que o input voltar
+            return;
+        }
+
         // ✅ OTIMIZADO: Reutiliza Vector3
         horizontalMove.x = moveDirection.x;
         horizontalMove.y = 0;
         horizontalMove.z = moveDirection.z;
 
-        if (horizontalMove.magnitude > 0.1f)
+        if (horizontalMove.sqrMagnitude > 0.01f)
         {
-            // ✅ OTIMIZADO: Atualizar target apenas periodicamente
-            rotationUpdateTimer += Time.deltaTime;
-            if (rotationUpdateTimer >= ROTATION_UPDATE_INTERVAL)
-            {
-                cachedTargetRotation = Quaternion.LookRotation(horizontalMove);
-                rotationUpdateTimer = 0f;
-            }
+            // Uncharted Style: Rotação dinâmica baseada na velocidade e ângulo
+            // Quanto mais rápido o jogador, mais "pesada" é a curva para evitar mudanças bruscas instantâneas
             
-            // ✅ OTIMIZADO: Usar Lerp é mais rápido que RotateTowards
-            cachedTransform.rotation = Quaternion.Lerp(
-                cachedTransform.rotation,
-                cachedTargetRotation,
-                Time.deltaTime * turnSpeed * 0.1f
+            // 1. Define o alvo de rotação
+            Quaternion targetRot = Quaternion.LookRotation(horizontalMove);
+            
+            // 2. Calcula a velocidade de rotação dinâmica
+            // Se o ângulo for muito grande (mudança brusca), a rotação é levemente mais lenta para parecer mais orgânica
+            float angleDiff = Quaternion.Angle(cachedTransform.rotation, targetRot);
+            float dynamicTurnSpeed = turnSpeed;
+            
+            // Suaviza a velocidade de giro baseada no ângulo (curvas largas são mais fluidas)
+            float speedFactor = Mathf.Clamp01(currentSpeed / maxSpeed);
+            float smoothness = Mathf.Lerp(rotationSmoothing, rotationSmoothing * 0.5f, speedFactor);
+            
+            // 3. Aplica Slerp (Spherical Linear Interpolation) para uma trajetória de arco mais natural
+            cachedTransform.rotation = Quaternion.Slerp(
+                cachedTransform.rotation, 
+                targetRot, 
+                Time.deltaTime * smoothness
             );
         }
     }
@@ -914,11 +1060,11 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
 
         float effectiveGravity = isWallRunning ? wallRunGravity : gravity;
 
-        bool canDoNormalJump = controller.isGrounded || canJumpAfterGrind || isNearRail;
+        bool canDoNormalJump = controller.isGrounded || canJumpAfterGrind;
 
         if (canDoNormalJump)
         {
-            if (controller.isGrounded || isNearRail)
+            if (controller.isGrounded)
             {
                 moveDirection.y = -controller.stepOffset;
                 isFalling = false;
@@ -1657,5 +1803,13 @@ GUI.Label(new Rect(10, 230, 300, 20), $"Glide: {isGliding}");
     public bool IsGrounded => controller.isGrounded;
     public bool IsRotationLocked => isRotationLocked;
     public bool IsStomping => isStomping;
-    public bool IsGliding => isGliding;
+
+    /// <summary>
+    /// Zera a velocidade vertical (gravidade acumulada).
+    /// Útil ao entrar em estados que ignoram a gravidade, como o grind rail.
+    /// </summary>
+    public void ResetVerticalVelocity()
+    {
+        moveDirection.y = 0;
+    }
 }

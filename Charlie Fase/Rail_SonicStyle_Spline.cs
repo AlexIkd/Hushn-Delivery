@@ -29,7 +29,7 @@ public class Rail_SonicStyle_Spline : MonoBehaviour
     [SerializeField] private float transitionInDuration = 0.5f;
     [Tooltip("Tempo para a camera transicionar da do rail de volta para a principal.")]
     [SerializeField] private float transitionOutDuration = 0.5f;
-
+    
     [Header("Configuracoes de Cooldown")]
     [Tooltip("Tempo (em segundos) que a camera cinematografica ficara desativada apos ser desativada.")]
     [SerializeField] private float cameraCooldownDuration = 2.0f;
@@ -65,7 +65,7 @@ public class Rail_SonicStyle_Spline : MonoBehaviour
 
         if (splineContainer == null || splineContainer.Splines.Count == 0)
         {
-            Debug.LogWarning("Rail '" + gameObject.name + "' nao possui SplineContainer ou spline configurado!");
+            Debug.LogWarning("Rail \'" + gameObject.name + "\' nao possui SplineContainer ou spline configurado!");
         }
     }
 
@@ -298,7 +298,7 @@ public class Rail_SonicStyle_Spline : MonoBehaviour
         
         // Desativa o flag para que a camera cinematografica nao seja ativada novamente
         // a menos que seja reativada manualmente no Inspector.
-        enableCinematicCamera = false;
+        enableCinematicCamera = false; // Mantido conforme logica original: desativa apos o primeiro uso.
     }
 
     public Rail_SonicStyle_Spline GetAdjacentRail(bool isLeft)

@@ -2,191 +2,242 @@ using UnityEngine;
 using System.Collections;
 
 /// <summary>
-/// Gerencia a transicao suave entre a camera principal do jogador e as cameras cinematicas dos rails.
-/// Esta versao usa Coroutines e Lerp/Slerp para transicao suave, sem depender do Cinemachine.
+/// Gerencia a transição suave entre a câmera principal do jogador e as câmeras cinemáticas dos rails.
+/// Esta versão refatorada utiliza a própria Main Camera para a transição,
+/// garantindo que todos os efeitos de pós-processamento, luzes e sombras sejam preservados.
+/// O controle do jogador sobre a Main Camera é desativado durante a transição.
 /// </summary>
 public class CameraRailManager : MonoBehaviour
 {
     public static CameraRailManager Instance { get; private set; }
 
-    [Header("Configuracao da Camera")]
-    [Tooltip("Se a transicao cinematica de camera deve ser ativada.")]
+    [Header("Configuração da Câmera")]
+    [Tooltip("Se a transição cinemática de câmera deve ser ativada.")]
     [SerializeField] private bool enableCinematicCamera = true;
 
-    [Tooltip("A camera principal do jogo (Camera.main).")]
+    [Tooltip("A câmera principal do jogo (Camera.main).")]
     [SerializeField] private Camera mainCamera;
 
-    [Header("Componente de Controle da Camera Principal")]
-    [Tooltip("O script que controla o movimento da camera principal (ex: CameraController.cs). Deve ser desativado durante a transicao.")]
+    [Header("Componente de Controle da Câmera Principal")]
+    [Tooltip("O script que controla o movimento da câmera principal (ex: CameraController.cs). Deve ser desativado durante a transição.")]	
     [SerializeField] private MonoBehaviour mainCameraControlScript;
     
-    [Tooltip("O tempo de transicao padrao (em segundos) caso nenhum seja especificado.")]
+    [Tooltip("O tempo de transição padrão (em segundos) caso nenhum seja especificado.")]
     [SerializeField] private float defaultTransitionDuration = 0.5f;
+
+    [Header("Curva de Transição")]
+    [Tooltip("Curva para controlar a suavidade do blending entre as câmeras.")]
+    [SerializeField] private AnimationCurve transitionCurve = new AnimationCurve(new Keyframe(0, 0), new Keyframe(1, 1));
 
     private Coroutine transitionCoroutine;
     private bool isTransitioning = false;
-    private float originalFOV;
+    
+    private Transform targetTransform;
+    private Camera currentActiveCamera; // A câmera que está ativa e renderizando (mainCamera ou railCam)
+    private Camera railCameraToDeactivate; // A câmera do rail que será desativada no final da transição para a main
+
+    private bool isReturningToMain;
+    private float transitionDuration;
+    private float elapsedTime = 0f;
+    
+    private Vector3 startPosition;
+    private Quaternion startRotation;
+    private float startFOV;
+    private float targetFOV;
 
     private void Awake()
     {
         if (Instance != null && Instance != this)
         {
             Destroy(gameObject);
+            return;
         }
-        else
+        
+        Instance = this;
+        
+        if (mainCamera == null)
         {
-            Instance = this;
-            if (mainCamera == null)
-            {
-                mainCamera = Camera.main;
-            }
-            if (mainCamera == null)
-            {
-                Debug.LogError("Nenhuma Camera Principal (tag 'MainCamera') encontrada na cena.");
-            }
-            else
-            {
-                originalFOV = mainCamera.fieldOfView;
-            }
+            mainCamera = Camera.main;
+        }
+        
+        if (mainCamera == null)
+        {
+            Debug.LogError("Nenhuma Câmera Principal encontrada. Certifique-se de que uma câmera tenha a tag 'MainCamera'.");
         }
     }
 
     /// <summary>
-    /// Inicia a transicao suave para a camera do rail.
+    /// Inicia a transição suave para a câmera do rail.
     /// </summary>
-    /// <param name="railCameraObject">O GameObject da camera do rail.</param>
-    /// <param name="duration">Duracao da transicao (opcional).</param>
     public void StartTransitionToRail(GameObject railCameraObject, float duration = -1f)
     {
-        if (!enableCinematicCamera) return;
-        if (mainCamera == null || railCameraObject == null) return;
+        if (!enableCinematicCamera || mainCamera == null || railCameraObject == null) return;
 
-        if (isTransitioning)
+        Camera railCam = railCameraObject.GetComponent<Camera>();
+        if (railCam == null)
         {
-            StopCoroutine(transitionCoroutine);
+            Debug.LogError("O objeto de Rail não possui um componente Camera.");
+            return;
         }
+
+        if (isTransitioning) StopCoroutine(transitionCoroutine);
 
         float finalDuration = duration > 0 ? duration : defaultTransitionDuration;
 
-        // 1. Ativa a camera do rail para que possamos obter sua Transform
+        // Garante que a câmera do rail esteja ativa no GameObject, mas não renderizando ainda
         railCameraObject.SetActive(true);
+        railCam.enabled = false; // Desativa temporariamente para a mainCamera renderizar a transição
 
-        // 2. Inicia a transicao
-        Transform targetTransform = railCameraObject.transform;
-        transitionCoroutine = StartCoroutine(TransitionCamera(mainCamera.transform, targetTransform, railCameraObject, false, finalDuration));
+        transitionCoroutine = StartCoroutine(TransitionRoutine(mainCamera, railCam, false, finalDuration));
         
-        Debug.Log($"Iniciando transicao suave para camera do Rail: {railCameraObject.name} em {finalDuration}s");
+        Debug.Log($"Iniciando transição para Rail: {railCameraObject.name} em {finalDuration}s");
     }
 
     /// <summary>
-    /// Inicia a transicao suave de volta para a camera principal do jogador.
+    /// Inicia a transição suave de volta para a câmera principal do jogador.
     /// </summary>
-    /// <param name="mainCameraTarget">O Transform que define a posicao e rotacao desejada da camera principal.</param>
-    /// <param name="currentRailCameraObject">O GameObject da camera do rail que esta sendo desativada.</param>
-    /// <param name="duration">Duracao da transicao (opcional).</param>
     public void StartTransitionToMain(Transform mainCameraTarget, GameObject currentRailCameraObject, float duration = -1f)
     {
-        if (!enableCinematicCamera) return;
-        if (mainCamera == null || mainCameraTarget == null) return;
+        if (!enableCinematicCamera || mainCamera == null || currentRailCameraObject == null) return;
 
-        if (isTransitioning)
-        {
-            StopCoroutine(transitionCoroutine);
-        }
+        Camera railCam = currentRailCameraObject.GetComponent<Camera>();
+        if (railCam == null) return;
+
+        if (isTransitioning) StopCoroutine(transitionCoroutine);
 
         float finalDuration = duration > 0 ? duration : defaultTransitionDuration;
 
-        // 1. A camera principal deve estar ativa para receber a transicao
-        mainCamera.gameObject.SetActive(true);
-
-        // 2. Inicia a transicao
-        transitionCoroutine = StartCoroutine(TransitionCamera(mainCamera.transform, mainCameraTarget, currentRailCameraObject, true, finalDuration));
+        // A câmera principal já deve estar ativa no GameObject, mas não renderizando
+        // O railCam é a câmera 'from' neste caso, e a mainCamera é a câmera 'to'
+        transitionCoroutine = StartCoroutine(TransitionRoutine(railCam, mainCamera, true, finalDuration));
         
-        Debug.Log($"Iniciando transicao suave de volta para camera Principal em {finalDuration}s");
+        Debug.Log($"Iniciando transição de volta para Principal em {finalDuration}s");
     }
 
-    /// <summary>
-    /// Corrotina que gerencia a transicao suave.
-    /// </summary>
-    private IEnumerator TransitionCamera(Transform cameraTransform, Transform targetTransform, GameObject cameraToDeactivate, bool isReturningToMain, float duration)
+    private IEnumerator TransitionRoutine(Camera fromCamera, Camera toCamera, bool returning, float duration)
     {
         isTransitioning = true;
-        float elapsedTime = 0f;
+        isReturningToMain = returning;
+        transitionDuration = duration;
+        elapsedTime = 0f;
 
-        Vector3 startPosition = cameraTransform.position;
-        Quaternion startRotation = cameraTransform.rotation;
-        
-        // FOV
-        float startFOV = mainCamera.fieldOfView;
-        float targetFOV = originalFOV;
-        
-        if (!isReturningToMain)
+        // A câmera que está ativa no momento (renderizando) é a 'fromCamera'
+        currentActiveCamera = fromCamera;
+        targetTransform = toCamera.transform;
+
+        // Se estamos indo para um rail, a mainCamera é a 'fromCamera' e o railCam é a 'toCamera'
+        // Se estamos voltando para a main, o railCam é a 'fromCamera' e a mainCamera é a 'toCamera'
+        if (!isReturningToMain) // Indo para o rail
         {
-            Camera railCam = cameraToDeactivate.GetComponent<Camera>();
-            if (railCam != null)
+            // Desativa o controle do jogador na Main Camera
+            if (mainCameraControlScript != null) 
             {
-                targetFOV = railCam.fieldOfView;
+                mainCameraControlScript.enabled = false;
             }
+            // A mainCamera será a câmera que fará a transição visualmente
+            // Copia a posição e rotação da 'fromCamera' (mainCamera) para a mainCamera
+            startPosition = mainCamera.transform.position;
+            startRotation = mainCamera.transform.rotation;
+            startFOV = mainCamera.fieldOfView;
+
+            // Garante que a mainCamera esteja habilitada para renderizar a transição
+            mainCamera.enabled = true;
+            // Desativa a câmera do rail temporariamente
+            toCamera.enabled = false;
         }
-        
-        if (mainCameraControlScript != null)
+        else // Voltando para a main
         {
-            mainCameraControlScript.enabled = false;
+            // A mainCamera já está desativada (pelo CompleteTransition anterior ou StartTransitionToRail)
+            // A 'fromCamera' (railCam) está ativa e renderizando
+            // A mainCamera fará a transição visualmente
+            // Copia a posição e rotação da 'fromCamera' (railCam) para a mainCamera
+            mainCamera.transform.position = fromCamera.transform.position;
+            mainCamera.transform.rotation = fromCamera.transform.rotation;
+            mainCamera.fieldOfView = fromCamera.fieldOfView;
+
+            startPosition = mainCamera.transform.position;
+            startRotation = mainCamera.transform.rotation;
+            startFOV = mainCamera.fieldOfView;
+
+            // Garante que a mainCamera esteja habilitada para renderizar a transição
+            mainCamera.enabled = true;
+            // Desativa a câmera do rail que está sendo deixada
+            fromCamera.enabled = false;
+            railCameraToDeactivate = fromCamera; // Guarda para desativar o GameObject no final
         }
 
-        mainCamera.enabled = true;
-
-        if (!isReturningToMain)
+        // Aguarda o LateUpdate processar a movimentação
+        while (isTransitioning)
         {
-            if (cameraToDeactivate != null)
-            {
-                Camera railCam = cameraToDeactivate.GetComponent<Camera>();
-                if (railCam != null) railCam.enabled = false;
-            }
-        }
-
-        while (elapsedTime < duration)
-        {
-            float t = elapsedTime / duration;
-            // Suavizacao da curva de transicao (SmoothStep)
-            t = t * t * (3f - 2f * t); 
-
-            cameraTransform.position = Vector3.Lerp(startPosition, targetTransform.position, t);
-            cameraTransform.rotation = Quaternion.Slerp(startRotation, targetTransform.rotation, t);
-            mainCamera.fieldOfView = Mathf.Lerp(startFOV, targetFOV, t);
-
-            elapsedTime += Time.deltaTime;
             yield return null;
         }
+    }
 
-        cameraTransform.position = targetTransform.position;
-        cameraTransform.rotation = targetTransform.rotation;
-        mainCamera.fieldOfView = targetFOV;
+    private void LateUpdate()
+    {
+        if (!isTransitioning || targetTransform == null) return;
 
+        elapsedTime += Time.deltaTime;
+        float t = Mathf.Clamp01(elapsedTime / transitionDuration);
+        
+        // Usa a AnimationCurve para um blending mais suave e customizável
+        float curveT = transitionCurve.Evaluate(t);
+
+        // Atualiza o FOV alvo dinamicamente caso a câmera de destino mude de FOV
+        targetFOV = targetTransform.GetComponent<Camera>().fieldOfView; // Pega o FOV da câmera de destino real
+
+        // Move a Main Camera
+        mainCamera.transform.position = Vector3.Lerp(startPosition, targetTransform.position, curveT);
+        mainCamera.transform.rotation = Quaternion.Slerp(startRotation, targetTransform.rotation, curveT);
+        mainCamera.fieldOfView = Mathf.Lerp(startFOV, targetFOV, curveT);
+
+        if (t >= 1.0f)
+        {
+            CompleteTransition();
+        }
+    }
+
+    private void CompleteTransition()
+    {
+        // A mainCamera já está ativa e na posição final
+        // Se voltamos para a principal, reativamos o controle do jogador
         if (isReturningToMain)
         {
-            if (cameraToDeactivate != null)
+            if (mainCameraControlScript != null) 
             {
-                cameraToDeactivate.SetActive(false);
+                mainCameraControlScript.enabled = true;
+            }
+            
+            // Desativa completamente o GameObject da câmera do rail que foi deixada
+            if (railCameraToDeactivate != null)
+            {
+                railCameraToDeactivate.gameObject.SetActive(false);
             }
         }
-        else
+        else // Se fomos para o rail
         {
-            if (cameraToDeactivate != null)
-            {
-                Camera railCam = cameraToDeactivate.GetComponent<Camera>();
-                if (railCam != null) railCam.enabled = true;
-            }
+            // Desativa a mainCamera e ativa a câmera do rail
             mainCamera.enabled = false;
+            targetTransform.GetComponent<Camera>().enabled = true;
         }
 
         isTransitioning = false;
-        Debug.Log("Transicao de camera concluida.");
+        targetTransform = null;
+        currentActiveCamera = null;
+        railCameraToDeactivate = null;
+        
+        Debug.Log("Transição de câmera concluída com sucesso.");
     }
 
     public bool IsTransitioning()
     {
         return isTransitioning;
+    }
+
+    public bool IsThisCameraTransitioning(Transform camTransform)
+    {
+        // Agora, apenas a mainCamera estará envolvida na transição visualmente
+        return isTransitioning && camTransform == mainCamera.transform;
     }
 
     public void ForceDeactivateRailCamera(GameObject railCameraObject)
@@ -195,16 +246,13 @@ public class CameraRailManager : MonoBehaviour
         {
             StopCoroutine(transitionCoroutine);
             isTransitioning = false;
+            // Garante que a mainCamera esteja ativa e renderizando
+            if (mainCamera != null) mainCamera.enabled = true;
         }
 
         if (railCameraObject != null)
         {
             railCameraObject.SetActive(false);
-        }
-
-        if (mainCamera != null)
-        {
-            mainCamera.enabled = true;
         }
 
         if (mainCameraControlScript != null)

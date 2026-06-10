@@ -32,12 +32,22 @@ public class DynamicFollowCamera : MonoBehaviour
     [Tooltip("Offset vertical para o ponto de origem do raio (geralmente a cabeça do jogador).")]
     public float collisionRaycastOffset = 1.2f;
 
-    [Header("Configurações Durante Wall Run")]
-    public float wallRunTiltAmount = 10f;
-    public float wallRunTiltSpeed = 8f;
-    public float wallRunYawOffset = 25f; 
-    public float wallRunYawSpeed = 5f;
+    [Header("Configurações Durante Wall Run (Estilo Jedi Survivor)")]
+    public float wallRunTiltAmount = 15f;
+    public float wallRunTiltSpeed = 6f;
+    public float wallRunYawOffset = 15f; 
+    public float wallRunYawSpeed = 4f;
     public float wallRunFOV = 75f;
+    [Tooltip("Distância extra para trás durante o Wall Run")]
+    public float wallRunDistanceMultiplier = 1.2f;
+    [Tooltip("Deslocamento lateral da câmera para 'abrir' a visão da pista")]
+    public float wallRunSideOffset = 2.5f;
+    [Tooltip("Velocidade de transição para o Side Offset ao entrar/sair do Wall Run")]
+    public float wallRunSideOffsetSpeed = 3.0f;
+    [Tooltip("Velocidade de transição para o multiplicador de distância ao entrar/sair do Wall Run")]
+    public float wallRunDistanceTransitionSpeed = 2.0f;
+    [Range(0f, 5f)]
+    public float wallRunAutoCenterStrength = 2.5f;
 
     [Header("Configurações Durante Rail Grind")]
     public float grindDistance = 8.0f;
@@ -53,6 +63,14 @@ public class DynamicFollowCamera : MonoBehaviour
     public float grindRotationSpeed = 3.0f;
     [Range(0f, 2f)]
     public float grindAutoCenterStrength = 0.3f;
+    [Tooltip("Offset lateral da câmera durante o Grind (Estilo Sonic Frontiers)")]
+    public float grindSideOffset = 2.0f;
+    [Tooltip("Velocidade de transição para o Side Offset do Grind")]
+    public float grindSideOffsetSpeed = 3.0f;
+    [Tooltip("Ângulo horizontal extra (Yaw) durante o Grind para visão lateral")]
+    public float grindYawOffset = 10f;
+    [Tooltip("Velocidade de transição para o Yaw Offset do Grind")]
+    public float grindYawSpeed = 3.0f;
 
     [Header("Configurações Durante Warp")]
     public float warpFOV = 85f;
@@ -100,6 +118,11 @@ public class DynamicFollowCamera : MonoBehaviour
     private float currentMotionBlur = 0f; // NOVO: Valor atual do Motion Blur
     private float currentChromaticAberration = 0f;
     private float currentVignette = 0f;
+    private float currentWallRunSideOffset = 0f; // Offset lateral dinâmico
+    private float currentGrindSideOffset = 0f; // NOVO: Offset lateral para o grind
+    private float currentGrindYaw = 0f; // NOVO: Yaw extra para o grind
+    private float currentWallRunDistanceMultiplier = 1.0f; // Multiplicador de distância dinâmico
+    private bool wasTransitioning = false; // NOVO: Flag para detectar o fim da transição
 
     // ✅ NOVO: Variáveis de Camera Shake
     private float shakeTimer = 0f;
@@ -113,6 +136,7 @@ public class DynamicFollowCamera : MonoBehaviour
     private PlayerRailRide_SonicStyle_Spline railRide;
     private WarpSystem warpSystem;
     private SlopeSlideSystem slopeSlideSystem; // Referência ao novo sistema de slide
+    private CameraRailManager cameraRailManager; // Referência ao CameraRailManager
 
     // ✅ NOVO: Propriedade pública para ler a distorção atual
     public float CurrentLensDistortion => currentDistortion;
@@ -135,6 +159,7 @@ public class DynamicFollowCamera : MonoBehaviour
             if (railRideSpline == null) railRide = target.GetComponent<PlayerRailRide_SonicStyle_Spline>();
             warpSystem = target.GetComponent<WarpSystem>();
             slopeSlideSystem = target.GetComponent<SlopeSlideSystem>(); // Obtém a referência ao SlopeSlideSystem
+            cameraRailManager = FindObjectOfType<CameraRailManager>(); // Obtém a referência ao CameraRailManager
 
             currentDistance = baseDistance;
             collisionDistance = baseDistance;
@@ -153,6 +178,7 @@ public class DynamicFollowCamera : MonoBehaviour
     {
         if (target == null) return;
         
+        // Lógica de input e shake que pode ser processada no Update
         bool isGrinding = IsPlayerGrinding();
         HandleZoomInput();
         
@@ -161,123 +187,138 @@ public class DynamicFollowCamera : MonoBehaviour
         else if (!isGrinding)
             HandleRotationInput(rotationSpeed);
 
-        // ✅ NOVO: Atualizar shake
         UpdateShake();
+
+        // Lógica de FOV e Pós-Processamento que pode ser processada no Update
+        bool isWallRunning = IsPlayerWallRunning();
+        bool isBoosting = IsPlayerBoosting();
+        bool isWarping = IsPlayerWarping();
+        bool isSliding = IsPlayerSliding();
+
+        float playerSpeed = GetPlayerSpeed();
+        bool isMovingFast = playerSpeed >= speedThreshold;
+        
+        float targetFOV = normalFOV;
+        float targetDistortion = 0f;
+        
+        if (isWarping) targetFOV = warpFOV;
+        else if (isBoosting) targetFOV = boostFOV;
+        else if (isGrinding) targetFOV = grindFOV;
+        else if (isWallRunning) targetFOV = wallRunFOV;
+        else if (isSliding) { targetFOV = slideFOV; targetDistortion = slideLensDistortion; }
+        else if (isMovingFast) targetFOV = speedFOV;
+
+        currentFOV = Mathf.Lerp(currentFOV, targetFOV, Time.deltaTime * fovTransitionSpeed);
+        if (cam != null) cam.fieldOfView = currentFOV;
+
+        currentDistortion = Mathf.Lerp(currentDistortion, targetDistortion, Time.deltaTime * distortionTransitionSpeed);
+
+        float targetMotionBlur = isSliding ? slideMotionBlurIntensity : 0f;
+        currentMotionBlur = Mathf.Lerp(currentMotionBlur, targetMotionBlur, Time.deltaTime * motionBlurTransitionSpeed);
+
+        float targetChromatic = isSliding ? slideChromaticAberration : 0f;
+        float targetVignette = isSliding ? slideVignetteIntensity : 0f;
+        currentChromaticAberration = Mathf.Lerp(currentChromaticAberration, targetChromatic, Time.deltaTime * ppTransitionSpeed);
+        currentVignette = Mathf.Lerp(currentVignette, targetVignette, Time.deltaTime * ppTransitionSpeed);
     }
 
     void LateUpdate()
     {
         if (target == null) return;
 
+        // Verifica se o CameraRailManager está controlando esta câmera
+        bool isBeingTransitioned = cameraRailManager != null && cameraRailManager.IsThisCameraTransitioning(transform);
+
+        if (isBeingTransitioned)
+        {
+            // Se a câmera está em transição, atualizamos currentX e currentY para a rotação atual
+            // para que, quando a transição terminar, a câmera não "pule" de volta para a rotação antiga.
+            currentX = transform.eulerAngles.y;
+            currentY = transform.eulerAngles.x;
+            wasTransitioning = true;
+            return; // Interrompe o LateUpdate aqui, pois o CameraRailManager está movendo a câmera
+        }
+
+        // Se a transição acabou de terminar, precisamos garantir que a câmera comece a interpolar
+        // a partir da sua posição e rotação atuais (que foram definidas pelo CameraRailManager).
+        if (wasTransitioning)
+        {
+            currentX = transform.eulerAngles.y;
+            currentY = transform.eulerAngles.x;
+            wasTransitioning = false;
+        }
+
         bool isGrinding = IsPlayerGrinding();
         bool isWallRunning = IsPlayerWallRunning();
         bool isBoosting = IsPlayerBoosting();
-        bool isWarping = IsPlayerWarping();
-        bool isSliding = IsPlayerSliding(); // Verifica se o jogador está deslizando
+        bool isSliding = IsPlayerSliding();
 
         // --- FOV e Altura ---
         float targetHeight = isGrinding ? grindHeight : height;
         float idealDistance = isGrinding ? grindDistance : currentDistance;
+        
+        float targetDistMultiplier = isWallRunning ? wallRunDistanceMultiplier : 1.0f;
+        currentWallRunDistanceMultiplier = Mathf.Lerp(currentWallRunDistanceMultiplier, targetDistMultiplier, Time.deltaTime * wallRunDistanceTransitionSpeed);
+        idealDistance *= currentWallRunDistanceMultiplier;
+        
         float smoothSpeed = isGrinding ? grindSmoothSpeed : positionSmoothSpeed;
         
-        // NOVO: Verificar velocidade usando PlayerMovement.CurrentSpeed
-        float playerSpeed = GetPlayerSpeed();
-        bool isMovingFast = playerSpeed >= speedThreshold;
-        
-        // Lógica de FOV com prioridade de estados
-        float targetFOV = normalFOV;
-        float targetDistortion = 0f; // NOVO: Padrão sem distorção
-        
-        if (isWarping)
-        {
-            targetFOV = warpFOV;
-        }
-        else if (isBoosting)
-        {
-            targetFOV = boostFOV;
-        }
-        else if (isGrinding)
-        {
-            targetFOV = grindFOV;
-        }
-        else if (isWallRunning)
-        {
-            targetFOV = wallRunFOV;
-        }
-        else if (isSliding) // Prioridade para o FOV do slide
-        {
-            targetFOV = slideFOV; // NOVO: Agora usa o FOV configurável do slide
-            targetDistortion = slideLensDistortion; // NOVO: Ativa o olho de gato
-        }
-        else if (isMovingFast)
-        {
-            // NOVO: Se está se movendo rápido, aumentar FOV
-            targetFOV = speedFOV;
-        }
-
-        currentFOV = Mathf.Lerp(currentFOV, targetFOV, Time.deltaTime * fovTransitionSpeed);
-        if (cam != null) cam.fieldOfView = currentFOV;
-
-        // NOVO: Suavização da Distorção (Olho de Gato)
-        currentDistortion = Mathf.Lerp(currentDistortion, targetDistortion, Time.deltaTime * distortionTransitionSpeed);
-
-        // NOVO: Suavização do Motion Blur
-        float targetMotionBlur = isSliding ? slideMotionBlurIntensity : 0f;
-        currentMotionBlur = Mathf.Lerp(currentMotionBlur, targetMotionBlur, Time.deltaTime * motionBlurTransitionSpeed);
-
-        // NOVO: Suavização de Aberração Cromática e Vinheta
-        float targetChromatic = isSliding ? slideChromaticAberration : 0f;
-        float targetVignette = isSliding ? slideVignetteIntensity : 0f;
-        currentChromaticAberration = Mathf.Lerp(currentChromaticAberration, targetChromatic, Time.deltaTime * ppTransitionSpeed);
-        currentVignette = Mathf.Lerp(currentVignette, targetVignette, Time.deltaTime * ppTransitionSpeed);
-
         // --- Rotação Horizontal (Eixo Y) ---
         bool hasMouseInput = Mathf.Abs(Input.GetAxis("Mouse X")) > 0.1f || Mathf.Abs(Input.GetAxis("Mouse Y")) > 0.1f;
         
-        if (!hasMouseInput && !isGrinding && !isSliding) // Não auto-centra se estiver deslizando
-        {
+        if (!hasMouseInput && !isGrinding && !isSliding && !isWallRunning)
             currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed);
+        else if (isWallRunning && wallRunAutoCenterStrength > 0f)
+        {
+            float strength = hasMouseInput ? wallRunAutoCenterStrength * 0.3f : wallRunAutoCenterStrength;
+            currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed * strength);
+            currentY = Mathf.Lerp(currentY, 10f, Time.deltaTime * autoCenterSpeed * strength);
         }
         else if (isGrinding && grindAutoCenterStrength > 0f)
         {
             currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed * grindAutoCenterStrength);
             currentY = Mathf.Lerp(currentY, 10f, Time.deltaTime * autoCenterSpeed * grindAutoCenterStrength);
         }
-        else if (isSliding) // Auto-centra suavemente para a frente durante o slide
+        else if (isSliding)
         {
-             currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed * 0.5f); // Mais suave
-             currentY = Mathf.Lerp(currentY, 15f, Time.deltaTime * autoCenterSpeed * 0.5f); // Mantém altura padrão
+             currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed * 0.5f);
+             currentY = Mathf.Lerp(currentY, 15f, Time.deltaTime * autoCenterSpeed * 0.5f);
         }
 
-        // --- Lógica de WallRun e Slide Tilt ---
-        float targetYawOffset = isWallRunning ? (IsPlayerOnLeftWall() ? wallRunYawOffset : -wallRunYawOffset) : 0f;
+        // --- Lógica de WallRun, Grind e Slide Tilt ---
+        float targetWallYaw = isWallRunning ? (IsPlayerOnLeftWall() ? wallRunYawOffset : -wallRunYawOffset) : 0f;
+        float targetWallSideOffset = isWallRunning ? (IsPlayerOnLeftWall() ? -wallRunSideOffset : wallRunSideOffset) : 0f;
+        
+        float targetGrindYaw = isGrinding ? grindYawOffset : 0f;
+        float targetGrindSideOffset = isGrinding ? grindSideOffset : 0f;
+        
         float targetTilt = 0f;
 
-        if (isWallRunning)
-        {
-            targetTilt = IsPlayerOnLeftWall() ? wallRunTiltAmount : -wallRunTiltAmount;
-        }
-        else if (isGrinding)
-        {
-            targetTilt = target.right.y * grindTiltAmount;
-        }
-        else if (isSliding) // Aplica o tilt do slide
-        {
-            // O tilt pode ser fixo ou baseado na direção lateral do slide
-            // Por enquanto, um tilt fixo para dar a sensação de velocidade
-            targetTilt = slideTiltAngle; // Ou -slideTiltAngle dependendo da direção desejada
-        }
+        if (isWallRunning) targetTilt = IsPlayerOnLeftWall() ? wallRunTiltAmount : -wallRunTiltAmount;
+        else if (isGrinding) targetTilt = target.right.y * grindTiltAmount;
+        else if (isSliding) targetTilt = slideTiltAngle;
 
-        currentWallRunYaw = Mathf.Lerp(currentWallRunYaw, targetYawOffset, Time.deltaTime * wallRunYawSpeed);
+        // Transições
+        currentWallRunYaw = Mathf.Lerp(currentWallRunYaw, targetWallYaw, Time.deltaTime * (isWallRunning ? wallRunYawSpeed : 2.5f));
+        currentWallRunSideOffset = Mathf.Lerp(currentWallRunSideOffset, targetWallSideOffset, Time.deltaTime * (isWallRunning ? wallRunYawSpeed : wallRunSideOffsetSpeed));
+        
+        currentGrindYaw = Mathf.Lerp(currentGrindYaw, targetGrindYaw, Time.deltaTime * grindYawSpeed);
+        currentGrindSideOffset = Mathf.Lerp(currentGrindSideOffset, targetGrindSideOffset, Time.deltaTime * grindSideOffsetSpeed);
+        
         currentTilt = Mathf.Lerp(currentTilt, targetTilt, Time.deltaTime * (isWallRunning ? wallRunTiltSpeed : (isSliding ? slideTiltSpeed : 5f)));
 
         // --- Construção da Rotação Final ---
         Quaternion finalRotation = Quaternion.Euler(currentY, currentX, 0);
-        finalRotation *= Quaternion.Euler(0, currentWallRunYaw, 0);
+        finalRotation *= Quaternion.Euler(0, currentWallRunYaw + currentGrindYaw, 0);
         finalRotation *= Quaternion.Euler(0, 0, currentTilt);
 
         // --- COLISÃO APRIMORADA (SphereCast) ---
         Vector3 rayOrigin = target.position + Vector3.up * collisionRaycastOffset;
+        
+        // Aplica os offsets laterais (WallRun e Grind)
+        Vector3 combinedSideOffset = finalRotation * Vector3.right * (currentWallRunSideOffset + currentGrindSideOffset);
+        rayOrigin += combinedSideOffset;
+
         Vector3 direction = finalRotation * (Vector3.back * idealDistance + Vector3.up * (targetHeight - collisionRaycastOffset));
         Vector3 normalizedDir = direction.normalized;
         float maxRayDist = direction.magnitude;
@@ -286,32 +327,27 @@ public class DynamicFollowCamera : MonoBehaviour
         float targetCollisionDist = idealDistance;
 
         if (Physics.SphereCast(rayOrigin, cameraRadius, normalizedDir, out hit, maxRayDist, collisionLayers))
-        {
             targetCollisionDist = Mathf.Max(0.5f, hit.distance - collisionPadding);
-        }
 
         collisionDistance = Mathf.Lerp(collisionDistance, targetCollisionDist, Time.deltaTime * collisionResponseSpeed);
 
         // --- Posicionamento Final ---
         Vector3 desiredPosition = rayOrigin + normalizedDir * collisionDistance;
-
-        if (isBoosting)
-        {
-            desiredPosition += Random.insideUnitSphere * boostShakeAmount;
-        }
-
-        // ✅ NOVO: Aplicar shake offset
+        if (isBoosting) desiredPosition += Random.insideUnitSphere * boostShakeAmount;
         desiredPosition += shakeOffset;
 
-        transform.position = Vector3.Lerp(transform.position, desiredPosition, smoothSpeed);
-        transform.rotation = Quaternion.Slerp(transform.rotation, finalRotation, smoothSpeed);
+        // Apenas atualiza a posição e rotação se não estiver sendo controlada pelo CameraRailManager
+        if (!isBeingTransitioned)
+        {
+            transform.position = Vector3.Lerp(transform.position, desiredPosition, smoothSpeed);
+            transform.rotation = Quaternion.Slerp(transform.rotation, finalRotation, smoothSpeed);
+        }
     }
 
     // ✅ NOVO: Método para ativar camera shake
     public void TriggerWallDashShake()
     {
         if (!enableWallDashShake) return;
-
         shakeTimer = 0f;
         shakeDuration = wallDashShakeDuration;
         shakeAmount = wallDashShakeAmount;
@@ -324,17 +360,11 @@ public class DynamicFollowCamera : MonoBehaviour
         if (shakeTimer < shakeDuration)
         {
             shakeTimer += Time.deltaTime;
-            
-            // Calcular a intensidade do shake (diminui com o tempo)
             float progress = shakeTimer / shakeDuration;
             float intensity = Mathf.Lerp(shakeAmount, 0f, progress);
-            
-            // Gerar offset aleatório com frequência
-            float shakeX = Mathf.Sin(shakeTimer * shakeFrequency) * intensity;
-            float shakeY = Mathf.Cos(shakeTimer * shakeFrequency * 0.7f) * intensity;
-            float shakeZ = Mathf.Sin(shakeTimer * shakeFrequency * 0.5f) * intensity;
-            
-            shakeOffset = new Vector3(shakeX, shakeY, shakeZ);
+            float shakeX = (Mathf.PerlinNoise(Time.time * shakeFrequency, 0f) * 2f - 1f) * intensity;
+            float shakeY = (Mathf.PerlinNoise(0f, Time.time * shakeFrequency) * 2f - 1f) * intensity;
+            shakeOffset = new Vector3(shakeX, shakeY, 0f);
         }
         else
         {
@@ -342,14 +372,14 @@ public class DynamicFollowCamera : MonoBehaviour
         }
     }
 
-    // NOVO: Método para obter a velocidade do jogador via PlayerMovement
-    private float GetPlayerSpeed()
+    private void HandleZoomInput()
     {
-        if (playerMovement != null)
+        float scrollInput = Input.GetAxis("Mouse ScrollWheel");
+        if (Mathf.Abs(scrollInput) > 0.01f)
         {
-            return playerMovement.currentSpeed; // Usar currentSpeed do PlayerMovement_FrontiersStyle
+            currentDistance -= scrollInput * zoomSpeed;
+            currentDistance = Mathf.Clamp(currentDistance, minDistance, maxDistance);
         }
-        return 0f;
     }
 
     private void HandleRotationInput(float speed)
@@ -357,13 +387,6 @@ public class DynamicFollowCamera : MonoBehaviour
         currentX += Input.GetAxis("Mouse X") * speed;
         currentY -= Input.GetAxis("Mouse Y") * speed;
         currentY = Mathf.Clamp(currentY, minYAngle, maxYAngle);
-    }
-
-    private void HandleZoomInput()
-    {
-        float scrollInput = Input.GetAxis("Mouse ScrollWheel");
-        currentDistance -= scrollInput * zoomSpeed;
-        currentDistance = Mathf.Clamp(currentDistance, minDistance, maxDistance);
     }
 
     private bool IsPlayerGrinding()
@@ -375,48 +398,32 @@ public class DynamicFollowCamera : MonoBehaviour
 
     private bool IsPlayerWallRunning()
     {
-        if (playerMovement != null) return playerMovement.IsWallRunning;
-        return false;
+        return playerMovement != null && playerMovement.IsWallRunning;
     }
 
     private bool IsPlayerOnLeftWall()
     {
-        if (playerMovement != null) return playerMovement.OnLeftWall;
-        return false;
-    }
-
-    private bool IsPlayerOnRightWall()
-    {
-        if (playerMovement != null) return playerMovement.OnRightWall;
-        return false;
+        return playerMovement != null && playerMovement.OnLeftWall;
     }
 
     private bool IsPlayerBoosting()
     {
-        if (railRideSpline != null) return railRideSpline.IsBoosting;
-        if (railRide != null) return railRide.IsBoosting;
+        // Se houver lógica de boost no futuro
         return false;
     }
 
     private bool IsPlayerWarping()
     {
-        if (warpSystem != null) return warpSystem.IsWarping;
-        return false;
+        return warpSystem != null && warpSystem.IsWarping;
     }
 
-    // NOVO: Método para verificar se o jogador está deslizando
     private bool IsPlayerSliding()
     {
-        if (slopeSlideSystem != null) return slopeSlideSystem.IsSliding();
-        return false;
+        return slopeSlideSystem != null && slopeSlideSystem.IsSliding();
     }
 
-    private void OnDrawGizmosSelected()
+    private float GetPlayerSpeed()
     {
-        if (target == null) return;
-        Gizmos.color = Color.green;
-        Vector3 rayOrigin = target.position + Vector3.up * collisionRaycastOffset;
-        Gizmos.DrawWireSphere(transform.position, cameraRadius);
-        Gizmos.DrawLine(rayOrigin, transform.position);
+        return playerMovement != null ? playerMovement.currentSpeed : 0f;
     }
 }

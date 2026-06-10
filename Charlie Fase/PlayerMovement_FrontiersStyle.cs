@@ -33,6 +33,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [SerializeField] private float wallJumpForwardMomentum = 0.75f;
     [SerializeField] private KeyCode stompKey = KeyCode.LeftControl;
     [SerializeField] private ParticleSystem stompParticles;
+    [SerializeField] private float stompCooldownAfterDoubleJump = 0.5f; // Cooldown após pulo duplo
+    private float stompCooldownTimer = 0f;
     private bool isStomping = false;
 
     [Header("Air Movement")]
@@ -98,6 +100,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [SerializeField] private float glideDeceleration = 5f; // Taxa de desaceleração do glide
     [SerializeField] private float minGlideSpeed = 10f; // Velocidade mínima do glide
     [SerializeField] private float glideGraceTime = 0.15f; // Tempo de carência para não desativar imediatamente
+    [SerializeField] private float minGlideDuration = 0.5f; // Duração mínima do glide antes de poder ser cancelado
+
     [SerializeField] private float minHeightForGlide = 5f; // Altura mínima para ativar o glide
     
     [SerializeField] private ParticleSystem glideParticles;
@@ -127,6 +131,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private Vector3 lastWallNormal;
     private bool isGliding = false;
     private bool glideButtonHeld = false;
+    private float glideActiveTimer = 0f; // Tempo que o glide está ativo
+
     private float glideGraceTimer = 0f;
     private float currentGlideSpeed; // Velocidade atual do glide
 
@@ -283,14 +289,22 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         }
     }
 
-        void Update()
+    void Update()
     {
         // ✅ NOVO: Detecta saída do rail para resetar pulos
         if (railRide != null)
         {
             if (railRide.isGrinding)
             {
-                if (isGliding) StopGlide();
+                // Executa apenas no frame de entrada no rail
+                if (!wasGrindingLastFrame)
+                {
+                    if (isGliding) StopGlide();
+                    if (isDashing) StopAirDash();
+                    
+                    // Força a limpeza das partículas de dash ao entrar no rail
+                    StopAirDashParticles(true);
+                }
                 
                 // ✅ NOVO: Garante que o estado de chão seja limpo imediatamente ao entrar/estar no rail
                 // Isso evita que o pulo padrão seja ignorado por causa de um isGrounded "sujo" vindo do frame anterior
@@ -298,9 +312,16 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                 
                 wasGrindingLastFrame = true;
 
-                // ✅ NOVO: Pulo direto do Rail
+        // ✅ NOVO: Pulo direto do Rail
                 if (Input.GetButtonDown("Jump") && !animatorBusy)
                 {
+                    // Interrompe o idle prolongado ao pular do rail
+                    if (isProlongedIdle)
+                    {
+                        isProlongedIdle = false;
+                        idleTimer = 0f;
+                        if (animator != null) animator.SetBool("ProlongedIdle", false);
+                    }
                     ExecuteRailJump();
                 }
                 return;
@@ -340,14 +361,16 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         HandleProlongedIdle();
 
         // Atualiza o timer de carência do glide
-if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
+        if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
+        if (isGliding) glideActiveTimer += Time.deltaTime; // Incrementa o timer de duração do glide
+
         if (glideCooldownTimer > 0) glideCooldownTimer -= Time.deltaTime;
+        if (stompCooldownTimer > 0) stompCooldownTimer -= Time.deltaTime;
         
         // IMPORTANTE: HandleGlide deve vir DEPOIS de processar o pulo duplo no ApplyGravity
         // mas antes de aplicar o movimento final.
-        // No entanto, para capturar o GetButtonDown corretamente, vamos manter a ordem lógica.
-        HandleGlide(); 
-        UpdateAnimator();
+        // No entanto, para capturar o GetButtonDown corretamente, vamos manter a ordem
+        HandleGlide();
 
         // 2. Lógica de Recuperação
         if (recoveringFromWallRun)
@@ -405,6 +428,11 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
         {
             controller.Move(moveDirection * Time.deltaTime);
         }
+
+        // ✅ OTIMIZADO: Mover UpdateAnimator para o final do Update
+        // Isso garante que todas as variáveis de estado sejam atualizadas antes de serem passadas para o Animator.
+        // Isso ajuda a evitar "flicadas" visuais causadas por estados inconsistentes entre o script e o Animator.
+        UpdateAnimator();
     }
 
     private void FixedUpdate()
@@ -758,6 +786,13 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
     {
         if (Input.GetButtonDown("Jump"))
         {
+            // Interrompe o idle prolongado ao pular da parede
+            if (isProlongedIdle)
+            {
+                isProlongedIdle = false;
+                idleTimer = 0f;
+                if (animator != null) animator.SetBool("ProlongedIdle", false);
+            }
             ExitWallRun(true);
         }
     }
@@ -1070,12 +1105,20 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
                 isFalling = false;
             }
 
-            if (Input.GetButtonDown("Jump") && !animatorBusy)
+        if (Input.GetButtonDown("Jump") && !animatorBusy)
+        {
+            // Interrompe o idle prolongado ao pular
+            if (isProlongedIdle)
             {
-                moveDirection.y = jumpForce;
-                isJumping = true;
-                isFalling = false; // Garante que não esteja caindo ao pular
-                canJumpAfterGrind = false; // Consome o pulo do rail
+                isProlongedIdle = false;
+                idleTimer = 0f;
+                if (animator != null) animator.SetBool("ProlongedIdle", false);
+            }
+
+            moveDirection.y = jumpForce;
+            isJumping = true;
+            isFalling = false; // Garante que não esteja caindo ao pular
+            canJumpAfterGrind = false; // Consome o pulo do rail
 
                 if (airDashCharges < maxAirDashCharges)
                 {
@@ -1104,6 +1147,14 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
             // Lógica Unificada: Pulo Duplo OU Glide
             if (Input.GetButtonDown("Jump") && !animatorBusy)
             {
+                // Interrompe o idle prolongado ao pular (pulo duplo)
+                if (isProlongedIdle)
+                {
+                    isProlongedIdle = false;
+                    idleTimer = 0f;
+                    if (animator != null) animator.SetBool("ProlongedIdle", false);
+                }
+
                 if (doubleJumpCharges > 0)
                 {
                     // Executa Pulo Duplo
@@ -1118,10 +1169,13 @@ if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
                     if (enableDoubleJumpParticles && doubleJumpParticles != null)
                         StartDoubleJumpParticles();
 
+                    // Adiciona cooldown para o stomp após o pulo duplo
+                    stompCooldownTimer = stompCooldownAfterDoubleJump;
+
                     if (showDebugInfo)
-                        Debug.Log($"🚀 Pulo Duplo! Cargas restantes: {doubleJumpCharges}");
+                        Debug.Log($"🚀 Pulo Duplo! Cargas restantes: {doubleJumpCharges} | Stomp Cooldown: {stompCooldownAfterDoubleJump}s");
                 }
-else if (canGlide && !isGliding && glideCooldownTimer <= 0f)
+                else if (canGlide && !isGliding && glideCooldownTimer <= 0f)
                 {
                     // Tenta iniciar o Glide se não houver mais pulos
                     bool canStartGlide = !isWallRunning && !isStomping && !isDashing && 
@@ -1166,7 +1220,14 @@ else if (canGlide && !isGliding && glideCooldownTimer <= 0f)
         {
             if (Input.GetKeyDown(stompKey))
             {
-                StartStomp();
+                if (stompCooldownTimer <= 0)
+                {
+                    StartStomp();
+                }
+                else if (showDebugInfo)
+                {
+                    Debug.Log($"⏳ Stomp em cooldown após Pulo Duplo! ({stompCooldownTimer:F2}s restantes)");
+                }
             }
         }
 
@@ -1314,7 +1375,8 @@ else if (canGlide && !isGliding && glideCooldownTimer <= 0f)
         // Se já estiver planando, a única coisa que cancela é soltar o botão ou tocar o chão (tratado no CheckGround)
         if (isGliding)
         {
-            if (!glideButtonHeld)
+            // Só permite parar o glide se o botão não estiver segurado E a duração mínima já tiver passado
+            if (!glideButtonHeld && glideActiveTimer >= minGlideDuration)
             {
                 StopGlide();
             }
@@ -1337,13 +1399,15 @@ else if (canGlide && !isGliding && glideCooldownTimer <= 0f)
 
         isGliding = true;
         glideGraceTimer = glideGraceTime; // Inicia o timer de carência
+        glideActiveTimer = 0f; // Reseta o timer de duração do glide
+
         isJumping = false;
         isFalling = true; 
 
         // Zera a velocidade vertical e adiciona um pequeno impulso para cima para garantir a saída do chão
         moveDirection.y = 2.0f; // Pequeno impulso vertical para iniciar o glide suavemente
         
-// Mantém o momentum atual ao entrar no glide, sem impulso adicional
+        // Mantém o momentum atual ao entrar no glide, sem impulso adicional
         currentGlideSpeed = Mathf.Max(new Vector3(moveDirection.x, 0, moveDirection.z).magnitude, minGlideSpeed); // Define a velocidade inicial baseada no momentum atual
 
         if (animator != null)
@@ -1369,7 +1433,7 @@ else if (canGlide && !isGliding && glideCooldownTimer <= 0f)
             if (showDebugInfo) Debug.Log("✅ Animator: IsGliding = false");
         }
 
-StopGlideParticles();
+        StopGlideParticles();
         glideCooldownTimer = glideCooldown;
 
         if (showDebugInfo)
@@ -1470,11 +1534,14 @@ StopGlideParticles();
             cachedSpeed = normalizedSpeed;
         }
 
-        // ✅ OTIMIZADO: Só atualiza IsGrounded se mudou
-        if (controller.isGrounded != cachedIsGrounded)
+        // ✅ CORREÇÃO CIRÚRGICA: Impedimos que o Animator receba IsGrounded = true se estivermos no meio de um Stomp.
+        // Isso resolve o bug da animação de aterrissagem tocar prematuramente.
+        bool animatorGrounded = controller.isGrounded && !isStomping;
+
+        if (animatorGrounded != cachedIsGrounded)
         {
-            animator.SetBool("IsGrounded", controller.isGrounded);
-            cachedIsGrounded = controller.isGrounded;
+            animator.SetBool("IsGrounded", animatorGrounded);
+            cachedIsGrounded = animatorGrounded;
         }
 
         // ✅ OTIMIZADO: Só atualiza IsWallRunning se mudou
@@ -1598,26 +1665,31 @@ StopGlideParticles();
     {
         if (airDashParticles == null) return;
 
-        if (!airDashParticles.isPlaying)
-        {
-            airDashParticles.Play();
+        // Para e limpa as partículas antes de tocar novamente para garantir que reiniciem instantaneamente
+        airDashParticles.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+        airDashParticles.Play();
 
-            if (showDebugInfo)
-                Debug.Log("Particulas de air dash iniciadas.");
-        }
+        if (showDebugInfo)
+            Debug.Log("Particulas de air dash iniciadas.");
     }
 
-    private void StopAirDashParticles()
+    private void StopAirDashParticles(bool clearInstant = false)
     {
         if (airDashParticles == null) return;
 
-        if (airDashParticles.isPlaying)
+        if (clearInstant)
         {
-            airDashParticles.Stop();
-
-            if (showDebugInfo)
-                Debug.Log("Particulas de air dash paradas.");
+            // Para e limpa instantaneamente
+            airDashParticles.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
         }
+        else
+        {
+            // Para de emitir novas partículas, mas deixa as existentes sumirem aos poucos
+            airDashParticles.Stop();
+        }
+
+        if (showDebugInfo)
+            Debug.Log(clearInstant ? "Particulas de air dash limpas instantaneamente." : "Particulas de air dash paradas.");
     }
 
     private void StartJumpParticles()
@@ -1742,7 +1814,7 @@ StopGlideParticles();
         }
     }
 
-private void StartGlideParticles()
+    private void StartGlideParticles()
     {
         if (glideParticles == null) return;
 
@@ -1792,7 +1864,7 @@ private void StartGlideParticles()
         GUI.Label(new Rect(10, 170, 300, 20), $"Double Jump: (Charges: {doubleJumpCharges}/{maxDoubleJumpCharges})");
         GUI.Label(new Rect(10, 190, 300, 20), $"On Rail: {(railRide != null && railRide.isGrinding ? "Yes" : "No")}");
         GUI.Label(new Rect(10, 210, 300, 20), $"Stomp: {isStomping}");
-GUI.Label(new Rect(10, 230, 300, 20), $"Glide: {isGliding}");
+        GUI.Label(new Rect(10, 230, 300, 20), $"Glide: {isGliding}");
         if (glideCooldownTimer > 0)
         {
             GUI.Label(new Rect(10, 250, 300, 20), $"Glide Cooldown: {glideCooldownTimer:F2}s");

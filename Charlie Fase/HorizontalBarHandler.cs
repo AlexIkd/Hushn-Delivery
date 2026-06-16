@@ -7,27 +7,61 @@ public class HorizontalBarHandler : MonoBehaviour
     [SerializeField] private LayerMask barLayer;
     [SerializeField] private float grabCooldown = 0.5f;
     
-    [Header("Configurações Visuais")]
-    [SerializeField] private float playerRadiusOffset = 1.2f;
-    
+    [Header("Configurações de Balanço Automático")]
+    [SerializeField] private float maxSwingAngle = 75f; 
+    [SerializeField] private float swingSpeed = 4.5f;   
+    [Tooltip("Distância do ponto de grab da barra até o ponto de pivô do jogador (geralmente o centro do corpo).")]
+    [SerializeField] private float playerDistanceFromBar = 1.2f; 
+    [Tooltip("Ajuste vertical do ponto de pivô do jogador em relação ao ponto de grab da barra.")]
+    [SerializeField] private float playerVerticalOffset = 0.0f; 
+    [Tooltip("Ajuste horizontal do ponto de pivô do jogador ao longo da barra.")]
+    [SerializeField] private float playerHorizontalOffset = 0.0f; 
+    [Tooltip("Offset local das mãos do jogador em relação ao seu próprio pivô (transform.position).")]
+    [SerializeField] private Vector3 playerHandsLocalOffset = new Vector3(0, 1.5f, 0.5f);
+
+    [Header("Ajustes Manuais de Entrada")]
+    [Tooltip("Offset Forward usado quando o jogador entra de frente (olhando para o forward da barra).")]
+    [SerializeField] private float forwardEntryOffset = 0.0f;
+    [Tooltip("Offset Forward usado quando o jogador entra de costas (olhando contra o forward da barra).")]
+    [SerializeField] private float backwardEntryOffset = 0.0f;
+    [Tooltip("Velocidade de suavização ao encaixar na barra (0 = instantâneo, maior = mais lento).")]
+    [SerializeField] private float entryLerpSpeed = 10f;
+
+    [Header("Configurações de Lançamento")]
+    [SerializeField] private float horizontalForce = 25f;
+    [SerializeField] private float verticalForce = 15f;
+
+    [Header("Suavização")]
+    [SerializeField] private float angleSmoothTime = 0.1f;
+
+    [Header("Animação")]
+    [SerializeField] private string swingAnimationName = "Swing";
+    [SerializeField] private bool syncAnimationWithSwing = true;
+
     private PlayerMovement_FrontiersStyle playerMovement;
     private CharacterController controller;
     private Animator animator;
     
     private HorizontalBar currentBar;
     private bool isGrabbing = false;
-    private float currentAngle = 0f;
-    private Vector3 barRight;
+    public bool EnteredFromBack { get; private set; } = false;
+    private float swingTimer = 0f; 
+    private Vector3 playerInitialForwardOnGrab; 
     private float cooldownTimer = 0f;
-    
+    private float activeForwardOffset = 0f;
+
+    private float smoothSwingAngle;
+    private float angleVelocity;
+
+    private float entryLerpFactor = 0f;
+    private Vector3 positionAtGrab;
+    private Quaternion rotationAtGrab;
+
     void Start()
     {
         playerMovement = GetComponent<PlayerMovement_FrontiersStyle>();
         controller = GetComponent<CharacterController>();
         animator = GetComponent<Animator>();
-
-        if (playerMovement == null) Debug.LogError("PlayerMovement_FrontiersStyle não encontrado no mesmo GameObject.");
-        if (controller == null) Debug.LogError("CharacterController não encontrado no mesmo GameObject.");
     }
 
     void Update()
@@ -37,10 +71,15 @@ public class HorizontalBarHandler : MonoBehaviour
         if (isGrabbing)
         {
             HandleSwinging();
+            if (entryLerpFactor < 1f)
+            {
+                entryLerpFactor = Mathf.MoveTowards(entryLerpFactor, 1f, Time.deltaTime * entryLerpSpeed);
+            }
         }
         else
         {
             CheckForBar();
+            entryLerpFactor = 0f;
         }
     }
 
@@ -48,24 +87,8 @@ public class HorizontalBarHandler : MonoBehaviour
     {
         if (isGrabbing && currentBar != null)
         {
-            UpdatePlayerPosition();
-        }
-    }
-
-    private void CheckForBar()
-    {
-        // Não tenta pegar a barra se estiver no chão, wall running, ou em cooldown
-        if (cooldownTimer > 0 || (controller != null && controller.isGrounded) || (playerMovement != null && playerMovement.IsWallRunning)) return;
-
-        Collider[] colliders = Physics.OverlapSphere(transform.position, detectionRadius, barLayer);
-        foreach (var col in colliders)
-        {
-            HorizontalBar bar = col.GetComponentInParent<HorizontalBar>() ?? col.GetComponentInChildren<HorizontalBar>() ?? col.GetComponent<HorizontalBar>();
-            if (bar != null)
-            {
-                GrabBar(bar);
-                break;
-            }
+            UpdatePlayerPositionAndRotation();
+            UpdateAnimationSync();
         }
     }
 
@@ -76,26 +99,68 @@ public class HorizontalBarHandler : MonoBehaviour
         currentBar = bar;
         isGrabbing = true;
         
-        // Desabilita o movimento normal do jogador e o CharacterController
+        positionAtGrab = transform.position;
+        rotationAtGrab = transform.rotation;
+        entryLerpFactor = 0f;
+        
         if (playerMovement != null) 
         {
             playerMovement.IsGrabbingBar = true;
             playerMovement.enabled = false;
+            playerMovement.CancelWallRun();
+            playerMovement.CancelGlide();
+            playerMovement.CancelAirDash();
+            playerMovement.CancelStomp();
         }
         if (controller != null) controller.enabled = false;
         
-        // Zera a velocidade do jogador para evitar momentum indesejado
-        if (playerMovement != null) playerMovement.SetMovementFromBar(Vector3.zero);
+        float lookDot = Vector3.Dot(transform.forward, currentBar.grabPoint.forward);
         
-        // Calcula a direção inicial do balanço
-        barRight = bar.grabPoint.right;
-        // Define o ângulo inicial para que o jogador comece na parte inferior do balanço (ou onde for mais natural)
-        currentAngle = -90f; 
-        
+        // Mantém a direção que o jogador estava olhando ao entrar
+        if (lookDot >= 0)
+        {
+            playerInitialForwardOnGrab = currentBar.grabPoint.forward;
+            activeForwardOffset = forwardEntryOffset;
+        }
+        else
+        {
+            playerInitialForwardOnGrab = -currentBar.grabPoint.forward;
+            activeForwardOffset = backwardEntryOffset;
+        }
+
+        Vector3 directionToPlayer = (transform.position - bar.grabPoint.position).normalized;
+        float entryDot = Vector3.Dot(playerInitialForwardOnGrab, directionToPlayer);
+
+        if (entryDot > 0.1f) 
+        {
+            swingTimer = Mathf.PI * 1.5f; 
+            EnteredFromBack = true;
+        }
+        else if (entryDot < -0.1f)
+        {
+            swingTimer = Mathf.PI * 0.5f; 
+            EnteredFromBack = false;
+        }
+        else
+        {
+            swingTimer = 0f;
+            EnteredFromBack = false;
+        }
+
+        smoothSwingAngle = Mathf.Sin(swingTimer) * maxSwingAngle;
+        angleVelocity = 0;
+
         if (animator != null)
         {
             animator.SetBool("IsHorizontalBar", true);
-            animator.SetBool("IsGrounded", false); // Garante que a animação de chão seja desativada
+            animator.SetBool("IsGrounded", false);
+            if (syncAnimationWithSwing)
+            {
+                float normalizedAngle = (Mathf.Sin(swingTimer) * maxSwingAngle / maxSwingAngle); 
+                float normalizedTime = (normalizedAngle + 1f) / 2f; 
+                animator.Play(swingAnimationName, 0, normalizedTime);
+                animator.speed = 0f;
+            }
         }
     }
 
@@ -107,95 +172,89 @@ public class HorizontalBarHandler : MonoBehaviour
             return;
         }
 
-        // Aumenta o ângulo de balanço com base na swingSpeed da barra
-        currentAngle += currentBar.swingSpeed * Time.deltaTime;
-        // Mantém o ângulo dentro de 0-360 graus
-        if (currentAngle > 360f) currentAngle -= 360f;
-
-        // Se o botão de pulo for pressionado, lança o jogador baseado no quadrante atual
+        swingTimer += Time.deltaTime * swingSpeed;
+        
         if (Input.GetButtonDown("Jump"))
         {
-            Vector3 finalLaunchDirection = Vector3.zero;
-            
-            // Normaliza o ângulo para 0-360
-            float normalizedAngle = currentAngle;
-            while (normalizedAngle < 0) normalizedAngle += 360;
-            while (normalizedAngle >= 360) normalizedAngle -= 360;
+            Vector3 vectorToPlayer = transform.position - currentBar.grabPoint.position;
+            float dot = Vector3.Dot(vectorToPlayer, playerInitialForwardOnGrab);
 
-            // DETERMINAÇÃO DO QUADRANTE (Estilo Sonic Unleashed)
-            // Os ângulos dependem de como o balanço foi iniciado (-90 inicial)
-            // Quadrante 1: 315 a 45 graus -> LANÇAMENTO PARA FRENTE
-            // Quadrante 2: 45 a 135 graus -> LANÇAMENTO PARA BAIXO
-            // Quadrante 3: 135 a 225 graus -> LANÇAMENTO PARA TRÁS
-            // Quadrante 4: 225 a 315 graus -> LANÇAMENTO PARA CIMA
+            Vector3 jumpDir;
 
-            if (normalizedAngle >= 315 || normalizedAngle < 45)
+            if (dot > 0)
             {
-                // FRENTE (Eixo Forward do grabPoint)
-                finalLaunchDirection = currentBar.grabPoint.forward;
+                // Jogador está na frente do pivô -> Pula para frente
+                jumpDir = playerInitialForwardOnGrab;
             }
-            else if (normalizedAngle >= 45 && normalizedAngle < 135)
+            else
             {
-                // BAIXO (Eixo -Up do grabPoint)
-                finalLaunchDirection = -currentBar.grabPoint.up;
+                // Jogador está atrás do pivô -> Pula para trás
+                jumpDir = -playerInitialForwardOnGrab;
             }
-            else if (normalizedAngle >= 135 && normalizedAngle < 225)
-            {
-                // TRÁS (Eixo -Forward do grabPoint)
-                finalLaunchDirection = -currentBar.grabPoint.forward;
-            }
-            else // 225 a 315
-            {
-                // CIMA (Eixo Up do grabPoint)
-                finalLaunchDirection = currentBar.grabPoint.up;
-            }
-            
-            LaunchPlayer(finalLaunchDirection);
+
+            jumpDir.y = 0;
+            jumpDir.Normalize();
+
+            Vector3 finalVelocity = (jumpDir * horizontalForce) + (Vector3.up * verticalForce);
+            LaunchPlayer(finalVelocity);
         }
     }
 
-    private void UpdatePlayerPosition()
+    private void UpdatePlayerPositionAndRotation()
     {
-        // Calcula a posição do jogador em torno do grabPoint da barra
-        Quaternion rotation = Quaternion.AngleAxis(currentAngle, barRight);
-        Vector3 offset = rotation * (currentBar.grabPoint.forward * playerRadiusOffset);
+        float targetAngle = Mathf.Sin(swingTimer) * maxSwingAngle;
+        smoothSwingAngle = Mathf.SmoothDamp(smoothSwingAngle, targetAngle, ref angleVelocity, angleSmoothTime);
+
+        Vector3 desiredHandsWorldPosition = currentBar.grabPoint.position +
+                                            currentBar.grabPoint.right * playerHorizontalOffset +
+                                            currentBar.grabPoint.forward * activeForwardOffset +
+                                            Vector3.up * playerVerticalOffset;
+
+        Quaternion baseRotation = Quaternion.LookRotation(playerInitialForwardOnGrab, Vector3.up);
+        Quaternion swingBodyRotation = Quaternion.AngleAxis(smoothSwingAngle, currentBar.grabPoint.right);
         
-        transform.position = currentBar.grabPoint.position + offset;
-        
-        // Orienta o jogador na direção do balanço
-        Vector3 tangent = Vector3.Cross(barRight, offset).normalized;
-        if (tangent != Vector3.zero)
+        Quaternion targetRotation = swingBodyRotation * baseRotation;
+        Vector3 targetPosition = desiredHandsWorldPosition - (targetRotation * playerHandsLocalOffset);
+
+        if (entryLerpFactor < 1f)
         {
-            transform.rotation = Quaternion.LookRotation(tangent, -offset.normalized);
+            transform.position = Vector3.Lerp(positionAtGrab, targetPosition, entryLerpFactor);
+            transform.rotation = Quaternion.Slerp(rotationAtGrab, targetRotation, entryLerpFactor);
+        }
+        else
+        {
+            transform.position = targetPosition;
+            transform.rotation = targetRotation;
         }
     }
 
-    private void LaunchPlayer(Vector3 launchDirection)
+    private void UpdateAnimationSync()
+    {
+        if (animator != null && syncAnimationWithSwing)
+        {
+            float normalizedAngle = (smoothSwingAngle / maxSwingAngle); 
+            float normalizedTime = (normalizedAngle + 1f) / 2f; 
+            animator.Play(swingAnimationName, 0, normalizedTime);
+        }
+    }
+
+    private void LaunchPlayer(Vector3 finalVelocity)
     {
         isGrabbing = false;
         cooldownTimer = grabCooldown;
-        
-        // Reabilita o movimento normal do jogador e o CharacterController
         if (controller != null) controller.enabled = true;
-        if (playerMovement != null) playerMovement.enabled = true;
-        
-        // Cálculo da velocidade final usando o novo método da barra
-        // Isso garante que o arremesso considere o eixo Y do grabPoint
-        Vector3 finalVelocity = currentBar.CalculateLaunchVelocity(launchDirection);
-
-        // Passa a velocidade final para o script de movimento do jogador
         if (playerMovement != null) 
         {
+            playerMovement.enabled = true;
             playerMovement.IsGrabbingBar = false;
             playerMovement.SetMovementFromBar(finalVelocity);
         }
-
         if (animator != null)
         {
+            animator.speed = 1f; 
             animator.SetBool("IsHorizontalBar", false);
-            animator.SetTrigger("Jump"); // Ativa a animação de pulo
+            animator.SetTrigger("Jump");
         }
-
         currentBar = null;
     }
 
@@ -205,10 +264,26 @@ public class HorizontalBarHandler : MonoBehaviour
         cooldownTimer = grabCooldown;
         if (controller != null) controller.enabled = true;
         if (playerMovement != null) playerMovement.enabled = true;
-        if (animator != null) animator.SetBool("IsHorizontalBar", false);
+        if (animator != null) 
+        {
+            animator.speed = 1f; 
+            animator.SetBool("IsHorizontalBar", false);
+        }
         currentBar = null;
     }
 
-    // Propriedade para que outros scripts possam verificar se o jogador está balançando
-    public bool IsGrabbingBar => isGrabbing;
+    private void CheckForBar()
+    {
+        if (cooldownTimer > 0 || (controller != null && controller.isGrounded)) return;
+        Collider[] colliders = Physics.OverlapSphere(transform.position, detectionRadius, barLayer);
+        foreach (var col in colliders)
+        {
+            HorizontalBar bar = col.GetComponentInParent<HorizontalBar>() ?? col.GetComponentInChildren<HorizontalBar>() ?? col.GetComponent<HorizontalBar>();
+            if (bar != null)
+            {
+                GrabBar(bar);
+                break;
+            }
+        }
+    }
 }

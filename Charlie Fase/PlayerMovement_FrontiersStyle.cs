@@ -37,6 +37,12 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private float stompCooldownTimer = 0f;
     private bool isStomping = false;
 
+    // Métodos públicos para cancelamento de estados
+    public void CancelWallRun() { if (isWallRunning) ExitWallRun(); }
+    public void CancelGlide() { if (isGliding) StopGlide(); }
+    public void CancelAirDash() { if (isDashing) StopAirDash(); }
+    public void CancelStomp() { if (isStomping) isStomping = false; if (animator != null) animator.SetBool("IsStomping", false); } // Stomp não tem um método Stop dedicado, então resetamos a flag e o animator diretamente.
+
     [Header("Air Movement")]
     [SerializeField] private float airDashForce = 15f;
     [SerializeField] private float airDashDuration = 0.1f;
@@ -116,9 +122,14 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private bool recoveringFromWallRun = false;
     private float wallRunRecoveryTimer = 0f;
 
+    [Header("Bar Cooldown")]
+    [SerializeField] private float barWallRunCooldown = 0.5f;
+    private float barWallRunCooldownTimer = 0f;
+
     // Estados internos
     [HideInInspector] public bool IsGliding => isGliding;
     [HideInInspector] public bool IsGrabbingBar { get; set; } = false; // Nova propriedade para indicar se o jogador está agarrado à barra
+    public bool IsInNarrowPassage { get; set; } = false;
     public bool IsWallRunning => isWallRunning; // Propriedade pública para verificar se está em wall run
     [HideInInspector] public bool OnLeftWall => onLeftWall;
     [HideInInspector] public bool OnRightWall => onRightWall;
@@ -338,8 +349,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             }
         }
 
-        // Bloqueia o movimento normal se estiver agarrado à barra
-        if (IsGrabbingBar)
+        // Bloqueia o movimento normal se estiver agarrado à barra ou em passagem estreita
+        if (IsGrabbingBar || IsInNarrowPassage)
         {
             return;
         }
@@ -366,6 +377,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
         if (glideCooldownTimer > 0) glideCooldownTimer -= Time.deltaTime;
         if (stompCooldownTimer > 0) stompCooldownTimer -= Time.deltaTime;
+        if (barWallRunCooldownTimer > 0) barWallRunCooldownTimer -= Time.deltaTime;
         
         // IMPORTANTE: HandleGlide deve vir DEPOIS de processar o pulo duplo no ApplyGravity
         // mas antes de aplicar o movimento final.
@@ -597,7 +609,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             }
         }
 
-        if ((onLeftWall || onRightWall) && !isWallRunning && !controller.isGrounded && !recoveringFromWallRun)
+        if ((onLeftWall || onRightWall) && !isWallRunning && !controller.isGrounded && !recoveringFromWallRun && barWallRunCooldownTimer <= 0)
         {
             if (Physics.Raycast(position, Vector3.down, out raycastHit, RAYCAST_MAX_DISTANCE, groundMask))
             {
@@ -865,6 +877,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         // Reset de cargas de pulo ao usar a barra
         airDashCharges = maxAirDashCharges;
         doubleJumpCharges = maxDoubleJumpCharges;
+
+        // Inicia o cooldown do Wall Run ao sair da barra
+        barWallRunCooldownTimer = barWallRunCooldown;
     }
 
     private void ApplyQuickTurnDeceleration()
@@ -930,40 +945,33 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     private bool IsHighEnoughForAirTrick()
     {
-        if (Physics.Raycast(cachedTransform.position, Vector3.down, out raycastHit, RAYCAST_MAX_DISTANCE, groundMask))
+        // Usamos um Raycast com distância limitada pela altura mínima.
+        // Se o raio NÃO atingir o chão dentro dessa distância, significa que o jogador
+        // está alto o suficiente (ou sobre um vão), então permitimos o truque.
+        bool groundTooClose = Physics.Raycast(cachedTransform.position, Vector3.down, out raycastHit, minHeightForAirTrick, groundMask);
+
+        if (showDebugInfo)
         {
-            float distanceToGround = raycastHit.distance;
-            bool isHighEnough = distanceToGround >= minHeightForAirTrick;
-
-            if (showDebugInfo)
-            {
-                Debug.DrawRay(cachedTransform.position, Vector3.down * distanceToGround,
-                             isHighEnough ? Color.green : Color.yellow);
-            }
-
-            return isHighEnough;
+            Debug.DrawRay(cachedTransform.position, Vector3.down * minHeightForAirTrick,
+                         groundTooClose ? Color.red : Color.green);
         }
 
-        return false;
+        // Se NÃO houver chão perto, então está "alto o suficiente"
+        return !groundTooClose;
     }
 
     private bool IsHighEnoughForGlide()
     {
-        if (Physics.Raycast(cachedTransform.position, Vector3.down, out raycastHit, RAYCAST_MAX_DISTANCE, groundMask))
+        // Mesma lógica do Air Trick: se não houver chão detectado dentro da altura mínima, permite o glide.
+        bool groundTooClose = Physics.Raycast(cachedTransform.position, Vector3.down, out raycastHit, minHeightForGlide, groundMask);
+
+        if (showDebugInfo)
         {
-            float distanceToGround = raycastHit.distance;
-            bool isHighEnough = distanceToGround >= minHeightForGlide;
-
-            if (showDebugInfo)
-            {
-                Debug.DrawRay(cachedTransform.position, Vector3.down * distanceToGround,
-                             isHighEnough ? Color.green : Color.cyan); // Cor diferente para debug do glide
-            }
-
-            return isHighEnough;
+            Debug.DrawRay(cachedTransform.position, Vector3.down * minHeightForGlide,
+                         groundTooClose ? Color.red : Color.cyan);
         }
 
-        return false;
+        return !groundTooClose;
     }
 
     private void TriggerAirTrick()

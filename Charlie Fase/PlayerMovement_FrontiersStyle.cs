@@ -8,6 +8,23 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 {
     // Referência ao sistema de ranking de estilo
     private StyleRankSystem styleRankSystem;
+    [Header("Ground Slide Settings")]
+    [SerializeField] private float groundSlideHeight = 0.8f;
+    [SerializeField] private float groundSlideMinSpeed = 3f;
+    [SerializeField] private float minGroundSlideDuration = 0.5f; // Duração mínima obrigatória do slide
+    [SerializeField] private float maxGroundSlideDuration = 1.0f; // Duração total do slide
+    [SerializeField] private float groundSlideTransitionSpeed = 10f;
+    [SerializeField] private float maxGroundSlideTurnAngle = 35f; // Limite de 35 graus
+    [SerializeField] private float groundSlideCooldown = 0.5f; // Cooldown para usar o slide novamente
+    [SerializeField] private ParticleSystem groundSlideParticles;
+    private float groundSlideTimer = 0f;
+    private float groundSlideCooldownTimer = 0f;
+    private float groundSlideLockedSpeed = 0f;
+    private Vector3 groundSlideInitialDirection; // Direção inicial do slide no chão
+    private float originalHeight;
+    private float originalCenterY;
+    private bool isGroundSliding = false;
+    private float currentColliderHeight;
     [Header("Configurações de Velocidade")]
     [SerializeField] public float maxSpeed = 15f;
     [SerializeField] private float acceleration = 10f;
@@ -21,6 +38,22 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [SerializeField] private float quickTurnAngle = 165f;
     [SerializeField] private float quickTurnDeceleration = 8f;
     [SerializeField] private float quickTurnMinSpeedMultiplier = 0.4f;
+    [SerializeField] private KeyCode quickTurnKey = KeyCode.Q; // Tecla dedicada para Quick Turn
+    [SerializeField] private float quickTurnCooldown = 1.0f; // Cooldown entre usos do Quick Turn
+    private float quickTurnCooldownTimer = 0f;
+
+    [Header("Desaceleração Brusca")]
+    [SerializeField] private float sharpDecelerationOnReverse = 30f; // Fator de desaceleração ao inverter direção
+    [SerializeField] private float reverseDirectionAngleThreshold = 135f; // Ângulo para considerar inversão de direção (ex: 135 graus)
+
+    [Header("Skid Settings")]
+    [Tooltip("Velocidade de frenagem durante o skid. Valores maiores param o personagem mais rápido.")]
+    [SerializeField] private float skidBrakeSpeed = 30f;
+    [Tooltip("Velocidade mínima que o personagem precisa ter para que o skid possa ser ativado.")]
+    [SerializeField] private float skidMinActivationSpeed = 2f;
+    [Tooltip("Tempo que o jogador fica impossibilitado de se mover após o skid terminar.")]
+    [SerializeField] private float skidLockDuration = 0.3f;
+    private float skidLockTimer = 0f;
 
     [Header("Configurações de Salto e Gravidade")]
     [SerializeField] private float jumpForce = 8f;
@@ -41,7 +74,19 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     public void CancelWallRun() { if (isWallRunning) ExitWallRun(); }
     public void CancelGlide() { if (isGliding) StopGlide(); }
     public void CancelAirDash() { if (isDashing) StopAirDash(); }
-    public void CancelStomp() { if (isStomping) isStomping = false; if (animator != null) animator.SetBool("IsStomping", false); } // Stomp não tem um método Stop dedicado, então resetamos a flag e o animator diretamente.
+    public void CancelStomp() { if (isStomping) isStomping = false; if (animator != null) animator.SetBool("IsStomping", false); if (isGroundSliding) StopGroundSlide(); } // Stomp não tem um método Stop dedicado, então resetamos a flag e o animator diretamente.
+
+    public void CancelGroundSlideImmediate()
+    {
+        if (isGroundSliding)
+        {
+            StopGroundSlide();
+            // Reseta o colisor instantaneamente para o tamanho normal
+            controller.height = originalHeight;
+            controller.center = new Vector3(controller.center.x, originalCenterY, controller.center.z);
+            currentColliderHeight = originalHeight;
+        }
+    }
 
     [Header("Air Movement")]
     [SerializeField] private float airDashForce = 15f;
@@ -52,6 +97,12 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private int airDashCharges = 0;
     private bool isDashing = false;
     private float airDashTimer = 0f;
+
+    [Header("Air Dash Cooldowns")]
+    [SerializeField] private float airDashCooldownAfterDoubleJump = 0.3f; // Cooldown após pulo duplo
+    [SerializeField] private float airDashCooldownAfterAirTrick = 0.3f;   // Cooldown após air trick
+    [SerializeField] private float minAirTrickDuration = 0.5f;           // Duração mínima do air trick antes de iniciar o cooldown do dash
+    private float airDashCooldownTimer = 0f;
 
     [Header("Idle Prolongado")]
     [SerializeField] private float prolongedIdleTime = 15f;
@@ -153,6 +204,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private Transform cameraTransform;
     private Transform cachedTransform;
     private PlayerRailRide_SonicStyle_Spline railRide;
+    private DynamicFollowCamera followCamera;
     private bool wasGrindingLastFrame = false; // Rastreia o estado anterior para detectar saída do rail
 
     private void ExecuteRailJump()
@@ -201,7 +253,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private bool hasMovementInput = false;
     public float currentSpeed;
     private float originalSpeedBeforeQuickTurn;
+    private bool isQuickTurning = false; // Novo estado para Quick Turn
+    private bool isSkidding = false; // Estado para frenagem brusca (skid)
     private float minSpeedDuringQuickTurn;
+
 
     // Controle de animação
     [HideInInspector] public bool animatorBusy = false;
@@ -236,7 +291,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private bool cachedOnLeftWall = false;
     private bool cachedOnRightWall = false;
     private bool cachedProlongedIdle = false;
+    private bool cachedIsGroundSliding = false;
     private bool cachedIsGliding = false;
+    private bool cachedIsSkidding = false;
     private const float SPEED_CHANGE_THRESHOLD = 0.01f;
 
     // ✅ OTIMIZAÇÕES - CONTROLE DE RAYCASTS
@@ -289,6 +346,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             if (showDebugInfo)
                 Debug.Log("GroundCheck criado automaticamente.");
         }
+
+        originalHeight = controller.height;
+        originalCenterY = controller.center.y;
+        currentColliderHeight = originalHeight;
 
         airDashCharges = maxAirDashCharges;
         doubleJumpCharges = maxDoubleJumpCharges;
@@ -343,6 +404,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                 // Acabou de sair do rail: reseta as cargas e permite pulo normal
                 canJumpAfterGrind = true;
                 doubleJumpCharges = maxDoubleJumpCharges;
+                originalHeight = controller.height;
+                originalCenterY = controller.center.y;
+                currentColliderHeight = originalHeight;
                 airDashCharges = maxAirDashCharges;
                 wasGrindingLastFrame = false;
                 if (showDebugInfo) Debug.Log("✅ Saiu do Rail: Pulos resetados!");
@@ -362,6 +426,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         }
 
         // 1. Pré-processamento e Verificações de Estado
+        HandleGroundSlideInput();
+        UpdateColliderHeight();
         CheckGround();
         CheckWallRun();
         HandleStomp();
@@ -378,6 +444,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         if (glideCooldownTimer > 0) glideCooldownTimer -= Time.deltaTime;
         if (stompCooldownTimer > 0) stompCooldownTimer -= Time.deltaTime;
         if (barWallRunCooldownTimer > 0) barWallRunCooldownTimer -= Time.deltaTime;
+        if (airDashCooldownTimer > 0) airDashCooldownTimer -= Time.deltaTime;
         
         // IMPORTANTE: HandleGlide deve vir DEPOIS de processar o pulo duplo no ApplyGravity
         // mas antes de aplicar o movimento final.
@@ -405,10 +472,24 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
         // 4. MOVIMENTO
         // Lógica de movimento terrestre
-        if (animatorBusy)
+        if (animatorBusy || isQuickTurning || isSkidding)
         {
-            ApplyQuickTurnDeceleration();
-            ApplyGravity();
+            // Se estiver skidding, apenas aplica a gravidade e deixa a velocidade ser controlada pela lógica de skid
+            if (isSkidding)
+            {
+                currentSpeed = Mathf.MoveTowards(currentSpeed, 0, skidBrakeSpeed * Time.deltaTime);
+                if (currentSpeed <= 0.5f) // Sai do skid quando a velocidade for muito baixa
+                {
+                    isSkidding = false;
+                    skidLockTimer = skidLockDuration; // Inicia o tempo de espera para voltar a se mover
+                }
+                ApplyGravity();
+            }
+            else
+            {
+                ApplyQuickTurnDeceleration();
+                ApplyGravity();
+            }
         }
         else if (isWallRunning)
         {
@@ -457,6 +538,20 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     private void HandleInputAndMovement()
     {
+        // Atualiza o timer de trava do skid
+        if (skidLockTimer > 0)
+        {
+            skidLockTimer -= Time.deltaTime;
+            // Se ainda estiver em lock, aplicamos apenas a desaceleração passiva e saímos
+            currentSpeed = Mathf.MoveTowards(currentSpeed, 0, deceleration * Time.deltaTime);
+            moveDirection.x = lastMoveDirection.x * currentSpeed;
+            moveDirection.z = lastMoveDirection.z * currentSpeed;
+            return;
+        }
+
+        // Atualiza o cooldown do Quick Turn
+        if (quickTurnCooldownTimer > 0) quickTurnCooldownTimer -= Time.deltaTime;
+
         if (recoveringFromWallRun || isDashing || barLaunchLockTimer > 0) return; // Bloqueia input se estiver em lock de lançamento
 
         float horizontalInput = Input.GetAxis("Horizontal");
@@ -466,9 +561,25 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         inputVector.x = horizontalInput;
         inputVector.y = 0;
         inputVector.z = verticalInput;
-        float inputMagnitude = inputVector.magnitude;
-
+                float inputMagnitude = inputVector.magnitude;
         hasMovementInput = inputMagnitude > 0.1f;
+
+        if (cameraTransform != null)
+        {
+            cameraForward = cameraTransform.forward;
+            cameraRight = cameraTransform.right;
+            cameraForward.y = 0;
+            cameraRight.y = 0;
+            cameraForward.Normalize();
+            cameraRight.Normalize();
+
+            desiredMoveDirection = (cameraForward * verticalInput + cameraRight * horizontalInput).normalized;
+        }
+        // Garante que desiredMoveDirection seja calculada antes de ser usada na lógica de desaceleração
+        if (desiredMoveDirection == Vector3.zero && inputVector.magnitude > 0.01f) // Fallback para quando a câmera não está disponível
+        {
+            desiredMoveDirection = inputVector.normalized;
+        }
 
         if (hasMovementInput)
         {
@@ -481,19 +592,43 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
             // Usa aceleração normal no chão e reduzida no ar
             float currentAccel = controller.isGrounded ? acceleration : airAcceleration;
-            currentSpeed = Mathf.MoveTowards(currentSpeed, maxSpeed, currentAccel * Time.deltaTime);
+
+            // Lógica de aceleração normal
+            if (controller.isGrounded && !isQuickTurning)
+            {
+                Vector3 flatMoveDirection = new Vector3(moveDirection.x, 0, moveDirection.z).normalized;
+                Vector3 flatInputDirection = new Vector3(desiredMoveDirection.x, 0, desiredMoveDirection.z).normalized;
+                if (inputMagnitude < 0.1f) flatInputDirection = flatMoveDirection;
+                float angleBetween = Vector3.Angle(flatMoveDirection, flatInputDirection);
+
+                if (angleBetween > reverseDirectionAngleThreshold && currentSpeed > skidMinActivationSpeed && !isSkidding) // Inicia o skid
+                {
+                    isSkidding = true;
+                    // A desaceleração será tratada no Update
+                }
+                else if (!isSkidding) // Aceleração normal se não estiver skidding e não houver inversão brusca
+                {
+                    currentSpeed = Mathf.MoveTowards(currentSpeed, maxSpeed, currentAccel * Time.deltaTime);
+                }
+            }
+            else // Fora do chão ou Quick Turning, usa aceleração normal
+            {
+                currentSpeed = Mathf.MoveTowards(currentSpeed, maxSpeed, currentAccel * Time.deltaTime);
+            }
 
             if (cameraTransform != null)
             {
                 // ✅ OTIMIZADO: Calcula uma vez
-                cameraForward = cameraTransform.forward;
-                cameraRight = cameraTransform.right;
-                cameraForward.y = 0;
-                cameraRight.y = 0;
-                cameraForward.Normalize();
-                cameraRight.Normalize();
 
-                desiredMoveDirection = (cameraForward * verticalInput + cameraRight * horizontalInput).normalized;
+
+                if (isGroundSliding)
+                {
+                    float angle = Vector3.Angle(groundSlideInitialDirection, desiredMoveDirection);
+                    if (angle > maxGroundSlideTurnAngle)
+                    {
+                        desiredMoveDirection = Vector3.RotateTowards(groundSlideInitialDirection, desiredMoveDirection, maxGroundSlideTurnAngle * Mathf.Deg2Rad, 0f);
+                    }
+                }
 
                 // Se estiver no chão, projeta a direção de movimento na superfície da rampa.
                 // Isso é crucial para que o jogador se mova *ao longo* da rampa e não "quique".
@@ -506,19 +641,36 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                     }
                 }
 
-                desiredMove = desiredMoveDirection * currentSpeed;
+                // Calcula desiredMove com base na lógica de skid
+                if (isSkidding)
+                {
+                    // Durante o skid, a direção de movimento é a direção anterior do jogador, mas a velocidade é reduzida.
+                    // Isso cria o efeito de "skid" sem virar imediatamente.
+                    desiredMove = new Vector3(lastMoveDirection.x, 0, lastMoveDirection.z).normalized * currentSpeed;
+                }
+                else
+                {
+                    desiredMove = desiredMoveDirection * currentSpeed;
+                }
 
                 if (controller.isGrounded && lastMoveDirection.sqrMagnitude > 0.01f && !animatorBusy)
                 {
                     float angle = Vector3.Angle(lastMoveDirection, desiredMoveDirection);
-                    if (angle >= quickTurnAngle && currentSpeed >= quickTurnThreshold)
-                    {
-                        TriggerQuickTurn();
-                        return;
-                    }
+
                 }
 
-                lastMoveDirection = desiredMoveDirection;
+                // Atualiza lastMoveDirection apenas se não estiver skidding, para manter a direção durante a frenagem
+                if (!isSkidding)
+                {
+                    lastMoveDirection = desiredMoveDirection;
+                }
+
+                // Verifica input para Quick Turn dedicado
+                if (Input.GetKeyDown(quickTurnKey) && controller.isGrounded && currentSpeed >= quickTurnThreshold && !animatorBusy && quickTurnCooldownTimer <= 0)
+                {
+                    TriggerQuickTurn();
+                    return;
+                }
 
                 moveDirection.x = desiredMove.x;
                 moveDirection.z = desiredMove.z;
@@ -823,7 +975,13 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             animator.SetTrigger("QuickTurn");
 
         animatorBusy = true;
+        isQuickTurning = true;
+        quickTurnCooldownTimer = quickTurnCooldown; // Inicia o cooldown
         if (isGliding) StopGlide(); // Cancela glide ao iniciar quick turn
+
+        // Notifica a câmera para girar 180 graus
+        if (followCamera == null) followCamera = Camera.main.GetComponent<DynamicFollowCamera>();
+        if (followCamera != null) followCamera.OnQuickTurn();
     }
 
     public void CompleteQuickTurn()
@@ -833,6 +991,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         moveDirection.z = -moveDirection.z;
         lastMoveDirection = -lastMoveDirection;
         animatorBusy = false;
+        isQuickTurning = false;
     }
 
     // Variáveis para controle de lançamento da barra
@@ -979,7 +1138,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         styleRankSystem?.OnAirTrickUsed();
 
         isRotationLocked = true;
-        rotationLockTimer = airTrickRotationLockTime;
+        // O rotationLockTimer agora usa o valor máximo entre o tempo de trava de rotação e a duração mínima definida manualmente
+        rotationLockTimer = Mathf.Max(airTrickRotationLockTime, minAirTrickDuration);
         airTrickCooldownTimer = airTrickCooldown;
         animatorBusy = true;
 
@@ -1014,6 +1174,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                 animatorBusy = false;
                 if (showDebugInfo)
                     Debug.Log("✅ Rotação destravada após Air Trick");
+
+                // Adiciona cooldown para o Air Dash APÓS o término do Air Trick
+                airDashCooldownTimer = airDashCooldownAfterAirTrick;
             }
         }
     }
@@ -1066,7 +1229,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         horizontalMove.y = 0;
         horizontalMove.z = moveDirection.z;
 
-        if (horizontalMove.sqrMagnitude > 0.01f)
+        if (horizontalMove.sqrMagnitude > 0.01f && !isQuickTurning && !isSkidding)
         {
             // Uncharted Style: Rotação dinâmica baseada na velocidade e ângulo
             // Quanto mais rápido o jogador, mais "pesada" é a curva para evitar mudanças bruscas instantâneas
@@ -1180,8 +1343,11 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                     // Adiciona cooldown para o stomp após o pulo duplo
                     stompCooldownTimer = stompCooldownAfterDoubleJump;
 
+                    // Adiciona cooldown para o Air Dash após o pulo duplo
+                    airDashCooldownTimer = airDashCooldownAfterDoubleJump;
+
                     if (showDebugInfo)
-                        Debug.Log($"🚀 Pulo Duplo! Cargas restantes: {doubleJumpCharges} | Stomp Cooldown: {stompCooldownAfterDoubleJump}s");
+                        Debug.Log($"🚀 Pulo Duplo! Cargas restantes: {doubleJumpCharges} | Stomp Cooldown: {stompCooldownAfterDoubleJump}s | Air Dash Cooldown: {airDashCooldownAfterDoubleJump}s");
                 }
                 else if (canGlide && !isGliding && glideCooldownTimer <= 0f)
                 {
@@ -1224,7 +1390,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     private void HandleStomp()
     {
-        if (!controller.isGrounded && !isDashing && !isStomping && !isWallRunning)
+        // Stomp só pode ser iniciado se NÃO estiver no chão
+        if (!controller.isGrounded && !isDashing && !isStomping && !isWallRunning && !isGroundSliding)
         {
             if (Input.GetKeyDown(stompKey))
             {
@@ -1276,7 +1443,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     private void HandleAirDash()
     {
-        if (!controller.isGrounded && !isWallRunning && !isDashing && !isStomping && airDashCharges > 0)
+        if (!controller.isGrounded && !isWallRunning && !isDashing && !isStomping && airDashCharges > 0 && airDashCooldownTimer <= 0)
         {
             if (Input.GetKeyDown(KeyCode.LeftShift))
             {
@@ -1601,12 +1768,25 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             cachedProlongedIdle = isProlongedIdle;
         }
 
-        // ✅ NOVO: Só atualiza IsGliding se mudou
-        if (isGliding != cachedIsGliding)
+        // ✅ NOVO: Só atualiza IsGroundSliding se mudou
+        if (isGroundSliding != cachedIsGroundSliding)
         {
-            animator.SetBool("IsGliding", isGliding);
-            cachedIsGliding = isGliding;
+            animator.SetBool("IsGroundSliding", isGroundSliding);
+            cachedIsGroundSliding = isGroundSliding;
         }
+
+        // ✅ NOVO: Só atualiza IsGliding se mudou
+            if (isGliding != cachedIsGliding)
+            {
+                animator.SetBool("IsGliding", isGliding);
+                cachedIsGliding = isGliding;
+            }
+
+            if (isSkidding != cachedIsSkidding)
+            {
+                animator.SetBool("IsSkidding", isSkidding);
+                cachedIsSkidding = isSkidding;
+            }
     }
 
     // ======================================================
@@ -1870,12 +2050,13 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         GUI.Label(new Rect(10, 130, 300, 20), $"Air Trick Cooldown: {airTrickCooldownTimer:F2}s");
         GUI.Label(new Rect(10, 150, 300, 20), $"Air Dash: {isDashing} (Charges: {airDashCharges}/{maxAirDashCharges})");
         GUI.Label(new Rect(10, 170, 300, 20), $"Double Jump: (Charges: {doubleJumpCharges}/{maxDoubleJumpCharges})");
-        GUI.Label(new Rect(10, 190, 300, 20), $"On Rail: {(railRide != null && railRide.isGrinding ? "Yes" : "No")}");
-        GUI.Label(new Rect(10, 210, 300, 20), $"Stomp: {isStomping}");
-        GUI.Label(new Rect(10, 230, 300, 20), $"Glide: {isGliding}");
+        GUI.Label(new Rect(10, 190, 300, 20), $"Air Dash Cooldown: {airDashCooldownTimer:F2}s");
+        GUI.Label(new Rect(10, 210, 300, 20), $"On Rail: {(railRide != null && railRide.isGrinding ? "Yes" : "No")}");
+        GUI.Label(new Rect(10, 230, 300, 20), $"Stomp: {isStomping}");
+        GUI.Label(new Rect(10, 250, 300, 20), $"Glide: {isGliding}");
         if (glideCooldownTimer > 0)
         {
-            GUI.Label(new Rect(10, 250, 300, 20), $"Glide Cooldown: {glideCooldownTimer:F2}s");
+            GUI.Label(new Rect(10, 270, 300, 20), $"Glide Cooldown: {glideCooldownTimer:F2}s");
         }
     }
 
@@ -1883,6 +2064,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     public bool IsGrounded => controller.isGrounded;
     public bool IsRotationLocked => isRotationLocked;
     public bool IsStomping => isStomping;
+    public bool IsGroundSliding => isGroundSliding;
 
     /// <summary>
     /// Zera a velocidade vertical (gravidade acumulada).
@@ -1891,5 +2073,77 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     public void ResetVerticalVelocity()
     {
         moveDirection.y = 0;
+    }
+
+    private void HandleGroundSlideInput()
+    {
+        // Atualiza o cooldown do slide
+        if (groundSlideCooldownTimer > 0) groundSlideCooldownTimer -= Time.deltaTime;
+
+        // Só permite iniciar o slide se estiver REALMENTE no chão (grounded), não estiver em Quick Turn e o cooldown expirou
+        if (Input.GetKeyDown(stompKey) && controller.isGrounded && currentSpeed > groundSlideMinSpeed && !isGroundSliding && !isQuickTurning && groundSlideCooldownTimer <= 0)
+        {
+            StartGroundSlide();
+        }
+
+        if (isGroundSliding)
+        {
+            groundSlideTimer += Time.deltaTime;
+            currentSpeed = groundSlideLockedSpeed;
+
+            // O slide agora tem uma duração mínima obrigatória.
+            // Após essa duração, ele pode ser cancelado soltando o botão.
+            
+            bool reachedMaxDuration = groundSlideTimer >= maxGroundSlideDuration;
+            bool manualCancel = groundSlideTimer >= minGroundSlideDuration && Input.GetKeyUp(stompKey);
+            bool lostSpeed = groundSlideTimer >= minGroundSlideDuration && currentSpeed < 2f;
+            bool lostGround = groundSlideTimer >= minGroundSlideDuration && !isGrounded;
+
+            if (reachedMaxDuration || manualCancel || lostSpeed || lostGround)
+            {
+                StopGroundSlide();
+            }
+        }
+    }
+
+    private void UpdateColliderHeight()
+    {
+        float targetHeight = isGroundSliding ? groundSlideHeight : originalHeight;
+        
+        if (Mathf.Abs(currentColliderHeight - targetHeight) > 0.001f)
+        {
+            currentColliderHeight = Mathf.Lerp(currentColliderHeight, targetHeight, Time.deltaTime * groundSlideTransitionSpeed);
+            float heightDifference = originalHeight - currentColliderHeight;
+            float newCenterY = originalCenterY - (heightDifference / 2f);
+            controller.height = currentColliderHeight;
+            controller.center = new Vector3(controller.center.x, newCenterY, controller.center.z);
+        }
+    }
+
+    private void StartGroundSlide()
+    {
+        if (isGroundSliding) return;
+        isGroundSliding = true;
+        groundSlideTimer = 0f;
+        groundSlideLockedSpeed = currentSpeed;
+        groundSlideInitialDirection = lastMoveDirection.normalized; // Salva a direção inicial
+
+        if (animator != null) animator.SetBool("IsUnleashedSlide", true); // Reutilizando a animação existente
+        if (groundSlideParticles != null && !groundSlideParticles.isPlaying) groundSlideParticles.Play();
+        
+        // Não interage com SlopeSlideSystem aqui, pois é um slide de chão
+    }
+
+    private void StopGroundSlide()
+    {
+        if (!isGroundSliding) return;
+        isGroundSliding = false;
+        
+        groundSlideCooldownTimer = groundSlideCooldown; // Inicia o cooldown ao parar o slide
+
+        if (animator != null) animator.SetBool("IsUnleashedSlide", false);
+        if (groundSlideParticles != null) groundSlideParticles.Stop();
+        
+        // Não interage com SlopeSlideSystem aqui, pois é um slide de chão
     }
 }

@@ -11,16 +11,16 @@ public class SlopeSlideSystem : MonoBehaviour
 
     [Header("Configurações de Movimento")]
     public float slideSpeed = 15f;
-    public float lateralSpeed = 5f;
-    public float slideGravity = 20f; 
+    public float lateralSpeed = 10f; // Velocidade lateral para controle total
+    public float slideGravity = 25f; // Gravidade forte para manter o fluxo na rampa
     public LayerMask rampLayer; 
     public float raycastDistance = 0.2f; 
-    public float slideRaycastDistance = 0.5f; // Distância maior durante o slide para evitar "saltos"
+    public float slideRaycastDistance = 0.5f; 
     public float minSlideAngle = 30f; 
     
     [Header("Estabilização (Anti-Jitter)")]
-    public float stickToGroundForce = 5f; // Força extra para baixo para manter contato com a rampa
-    public float rotationSmoothSpeed = 10f; // Velocidade de rotação/alinhamento com a rampa
+    public float stickToGroundForce = 8f; // Aumentado para colar o jogador na rampa
+    public float rotationSmoothSpeed = 15f; // Alinhamento mais rápido e preciso
 
     [Header("Efeitos Visuais")]
     public ParticleSystem slideParticles; // Sistema de partículas de terra/poeira
@@ -89,32 +89,34 @@ public class SlopeSlideSystem : MonoBehaviour
 
     private void HandleSlide()
     {
-        // Calcula a direção baseada na inclinação
-        Vector3 slideDirection = Vector3.ProjectOnPlane(Vector3.down, hitNormal).normalized;
-        slideVelocity = slideDirection * slideSpeed;
+        // 1. Direção absoluta de descida (puro vetor da rampa)
+        Vector3 slopeDownDirection = Vector3.ProjectOnPlane(Vector3.down, hitNormal).normalized;
+        
+        // 2. Velocidade de descida fixa e limpa (sem interferência de momentum anterior)
+        Vector3 verticalFlow = slopeDownDirection * slideSpeed;
 
-        // Movimento lateral
+        // 3. Controle lateral absoluto
         float h = Input.GetAxis("Horizontal");
-        Vector3 lateralAxis = Vector3.Cross(hitNormal, slideDirection).normalized; 
+        // O eixo lateral é sempre perpendicular à descida e à normal da rampa
+        Vector3 lateralAxis = Vector3.Cross(hitNormal, slopeDownDirection).normalized; 
         Vector3 lateralMove = lateralAxis * h * lateralSpeed;
 
-        // Gravidade normal do slide
-        slideVelocity.y -= slideGravity * Time.deltaTime;
-
-        // ADERÊNCIA: Adiciona uma força constante na direção oposta à normal da rampa (empurrando contra o chão)
-        // Isso ajuda o CharacterController a não perder o contato em mudanças bruscas de ângulo
+        // 4. Força de aderência para evitar que o CharacterController "quique" ou perca o estado
         Vector3 stickForce = -hitNormal * stickToGroundForce;
 
-        controller.Move((slideVelocity + lateralMove + stickForce) * Time.deltaTime);
+        // 5. Movimento Final: Apenas o fluxo da rampa + seu controle lateral
+        // Note que não acumulamos slideVelocity aqui para garantir que o controle seja 1:1 com o seu input
+        Vector3 finalMovement = verticalFlow + lateralMove + stickForce;
+        
+        controller.Move(finalMovement * Time.deltaTime);
 
-        // Rotaciona o personagem para alinhar com a rampa e a direção do movimento
-        if (slideDirection != Vector3.zero)
+        // 6. Alinhamento visual instantâneo e limpo
+        if (slopeDownDirection != Vector3.zero)
         {
-            // 1. Calcula a rotação para olhar na direção do slide
-            Quaternion lookRotation = Quaternion.LookRotation(slideDirection, hitNormal);
-            
-            // 2. Aplica o Slerp para uma transição suave entre a rotação atual e o alinhamento com a rampa
-            transform.rotation = Quaternion.Slerp(transform.rotation, lookRotation, Time.deltaTime * rotationSmoothSpeed);
+            // O personagem sempre olha para onde a rampa desce, ajustado pelo seu controle lateral
+            Vector3 visualDir = (slopeDownDirection + (lateralAxis * h * 0.5f)).normalized;
+            Quaternion targetRot = Quaternion.LookRotation(visualDir, hitNormal);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, Time.deltaTime * rotationSmoothSpeed);
         }
     }
 
@@ -206,12 +208,23 @@ public class SlopeSlideSystem : MonoBehaviour
             StartSlideParticles();
         }
 
+        // RESET TOTAL DE ESTADO:
+        // Limpamos qualquer resquício de movimento anterior para que o slide seja 100% controlado pela rampa
         if (playerMovement != null)
         {
+            playerMovement.ResetMovementDirection(); // Zera moveDirection no script principal
             playerMovement.enabled = false;
             playerMovement.animatorBusy = true;
         }
+        
         slideVelocity = Vector3.zero;
+        
+        // Alinhamento inicial imediato com a rampa para evitar o "tranco" visual
+        Vector3 initialDown = Vector3.ProjectOnPlane(Vector3.down, hitNormal).normalized;
+        if (initialDown != Vector3.zero)
+        {
+            transform.rotation = Quaternion.LookRotation(initialDown, hitNormal);
+        }
     }
 
     private void ExitSlide()

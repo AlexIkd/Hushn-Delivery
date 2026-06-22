@@ -1,4 +1,5 @@
 using UnityEngine;
+using System.Collections;
 
 public class HorizontalBarHandler : MonoBehaviour
 {
@@ -38,6 +39,9 @@ public class HorizontalBarHandler : MonoBehaviour
     [SerializeField] private string swingAnimationName = "Swing";
     [SerializeField] private bool syncAnimationWithSwing = true;
 
+    [Header("Efeitos")]
+    [SerializeField] private PlayerAnimeSpeedLines jumpTrail;
+    
     private PlayerMovement_FrontiersStyle playerMovement;
     private CharacterController controller;
     private Animator animator;
@@ -255,7 +259,20 @@ public class HorizontalBarHandler : MonoBehaviour
             animator.SetBool("IsHorizontalBar", false);
             animator.SetTrigger("Jump");
         }
+
+        if (jumpTrail != null)
+        {
+            jumpTrail.EnableEffect(finalVelocity);
+            // Para o rastro após um pequeno tempo para simular o impulso inicial
+            Invoke(nameof(StopJumpTrail), 0.5f);
+        }
+
         currentBar = null;
+    }
+
+    private void StopJumpTrail()
+    {
+        if (jumpTrail != null) jumpTrail.DisableEffect();
     }
 
     private void ReleaseBar()

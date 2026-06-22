@@ -96,12 +96,29 @@ public class DynamicFollowCamera : MonoBehaviour
     [SerializeField] private float wallDashShakeFrequency = 25f;
     [SerializeField] private bool enableWallDashShake = true;
 
-    [Header("Configurações Durante Slide")]
+    [Header("Configurações Durante Slope Slide")]
+    public float slideDistance = 12.0f;
+    public float slideHeight = 6.0f;
+    public float slideSideOffset = 2.0f;
     public float slideFOV = 75f;
     public float slideTiltAngle = 15.0f;
     public float slideTiltSpeed = 7.0f;
     public float slideLensDistortion = -0.3f;
     public float distortionTransitionSpeed = 5f;
+    public float slideTransitionSpeed = 4.0f;
+    public float slidePitch = 15f; 
+    [Range(0f, 180f)] public float slideRotationLimit = 90f;
+
+    [Header("Configurações Durante Ground Slide (Mirror's Edge Style)")]
+    public float groundSlideDistance = 8.0f;
+    public float groundSlideHeight = 3.0f;
+    public float groundSlideSideOffset = 1.5f;
+    public float groundSlideFOV = 70f;
+    public float groundSlideTiltAngle = 10.0f;
+    public float groundSlideTiltSpeed = 10.0f;
+    public float groundSlideTransitionSpeed = 6.0f;
+    public float groundSlidePitch = 15f;
+    [Range(0f, 180f)] public float groundSlideRotationLimit = 90f;
 
     [Header("Configurações Durante Slide (Motion Blur)")]
     public float slideMotionBlurIntensity = 0.5f;
@@ -129,6 +146,7 @@ public class DynamicFollowCamera : MonoBehaviour
     private float currentGrindYaw = 0f;
     private float currentNarrowSideOffset = 0f;
     private float currentBarSideOffset = 0f;
+    private float currentSlideSideOffset = 0f;
     private float currentWallRunDistanceMultiplier = 1.0f;
     private bool wasTransitioning = false;
 
@@ -155,6 +173,14 @@ public class DynamicFollowCamera : MonoBehaviour
     private bool wasOnBar = false;
     private bool barAutoCenterActive = false;
     private float barEntrySideOffset = 0f;
+
+    [Header("Quick Turn Camera")]
+    public float quickTurnRotationSpeed = 10f;
+    public float quickTurnBlurIntensity = 0.4f;
+    private float quickTurnVelocity = 0f;
+    private float quickTurnTargetAdd = 0f;
+    private float currentQuickTurnAdd = 0f;
+    private bool isQuickTurnActive = false;
 
     public float CurrentLensDistortion => currentDistortion;
     public float CurrentMotionBlur => currentMotionBlur;
@@ -220,7 +246,7 @@ public class DynamicFollowCamera : MonoBehaviour
                 // para ficar atrás do novo forward do jogador.
                 // Como o side offset é aplicado usando finalRotation * Vector3.right, 
                 // e a rotação da câmera inverteu 180 graus, o "lado direito" da câmera no mundo agora é o oposto.
-                // Portanto, para manter o jogador no mesmo lado visual da tela, o sinal do offset DEVE ser invertido.
+                // Portanto, para manter o jogador no mesmo lado visual da tela, o "sinal" do offset DEVE ser invertido.
                 
                 if (horizontalBarHandler.EnteredFromBack)
                 {
@@ -243,21 +269,55 @@ public class DynamicFollowCamera : MonoBehaviour
         wasOnBar = isOnBar;
 
         HandleZoomInput();
+
+        bool isWallRunning = IsPlayerWallRunning();
+        bool isBoosting = IsPlayerBoosting();
+        bool isWarping = IsPlayerWarping();
+        bool isSliding = IsPlayerSliding();
+        bool isGroundSliding = IsPlayerGroundSliding();
         
         if (!isInNarrow && !isOnBar)
         {
             if (isGrinding && allowGrindCameraRotation)
                 HandleRotationInput(grindRotationSpeed);
+            else if (isSliding)
+            {
+                HandleRotationInput(rotationSpeed);
+                // Restringe a rotação em relação ao jogador (Sonic Unleashed Style)
+                float targetY = target.eulerAngles.y;
+                float angleDiff = Mathf.DeltaAngle(targetY, currentX);
+                currentX = targetY + Mathf.Clamp(angleDiff, -slideRotationLimit, slideRotationLimit);
+            }
+            else if (isGroundSliding)
+            {
+                HandleRotationInput(rotationSpeed);
+                // Restringe a rotação para o Ground Slide
+                // Transição suave para o ângulo restrito
+                float targetYAngle = target.eulerAngles.y;
+                float desiredX = targetYAngle + Mathf.Clamp(Mathf.DeltaAngle(targetYAngle, currentX), -groundSlideRotationLimit, groundSlideRotationLimit);
+                currentX = Mathf.LerpAngle(currentX, desiredX, Time.deltaTime * groundSlideTransitionSpeed);
+            }
             else if (!isGrinding)
                 HandleRotationInput(rotationSpeed);
         }
 
         UpdateShake();
 
-        bool isWallRunning = IsPlayerWallRunning();
-        bool isBoosting = IsPlayerBoosting();
-        bool isWarping = IsPlayerWarping();
-        bool isSliding = IsPlayerSliding();
+        // Lógica de Quick Turn Aditiva
+        if (Mathf.Abs(currentQuickTurnAdd - quickTurnTargetAdd) > 0.01f)
+        {
+            isQuickTurnActive = true;
+            float prevAdd = currentQuickTurnAdd;
+            currentQuickTurnAdd = Mathf.MoveTowards(currentQuickTurnAdd, quickTurnTargetAdd, Time.deltaTime * quickTurnRotationSpeed * 180f);
+            float delta = currentQuickTurnAdd - prevAdd;
+            currentX += delta;
+        }
+        else
+        {
+            isQuickTurnActive = false;
+            currentQuickTurnAdd = 0f;
+            quickTurnTargetAdd = 0f;
+        }
 
         float playerSpeed = GetPlayerSpeed();
         bool isMovingFast = playerSpeed >= speedThreshold;
@@ -272,6 +332,7 @@ public class DynamicFollowCamera : MonoBehaviour
         else if (isGrinding) targetFOV = grindFOV;
         else if (isWallRunning) targetFOV = wallRunFOV;
         else if (isSliding) { targetFOV = slideFOV; targetDistortion = slideLensDistortion; }
+        else if (isGroundSliding) { targetFOV = groundSlideFOV; targetDistortion = slideLensDistortion; }
         else if (isMovingFast) targetFOV = speedFOV;
 
         float fovSpeed = isInNarrow ? narrowEnterSpeed : (isOnBar ? barTransitionSpeed : narrowExitSpeed);
@@ -280,7 +341,7 @@ public class DynamicFollowCamera : MonoBehaviour
 
         currentDistortion = Mathf.Lerp(currentDistortion, targetDistortion, Time.deltaTime * distortionTransitionSpeed);
 
-        float targetMotionBlur = isSliding ? slideMotionBlurIntensity : 0f;
+        float targetMotionBlur = (isSliding || isQuickTurnActive) ? (isQuickTurnActive ? quickTurnBlurIntensity : slideMotionBlurIntensity) : 0f;
         currentMotionBlur = Mathf.Lerp(currentMotionBlur, targetMotionBlur, Time.deltaTime * motionBlurTransitionSpeed);
 
         float targetChromatic = isSliding ? slideChromaticAberration : 0f;
@@ -305,7 +366,6 @@ public class DynamicFollowCamera : MonoBehaviour
 
         if (wasTransitioning)
         {
-            currentX = transform.eulerAngles.y;
             currentY = transform.eulerAngles.x;
             wasTransitioning = false;
         }
@@ -313,6 +373,7 @@ public class DynamicFollowCamera : MonoBehaviour
         bool isGrinding = IsPlayerGrinding();
         bool isWallRunning = IsPlayerWallRunning();
         bool isSliding = IsPlayerSliding();
+        bool isGroundSliding = IsPlayerGroundSliding();
         bool isInNarrow = IsPlayerInNarrow();
         bool isOnBar = IsPlayerOnBar();
         
@@ -325,10 +386,10 @@ public class DynamicFollowCamera : MonoBehaviour
             narrowExitTimer -= Time.deltaTime;
         }
 
-        float tSpeed = isInNarrow ? narrowEnterSpeed : (isOnBar ? barTransitionSpeed : narrowExitSpeed);
+        float tSpeed = isInNarrow ? narrowEnterSpeed : (isOnBar ? barTransitionSpeed : (isSliding ? slideTransitionSpeed : (isGroundSliding ? groundSlideTransitionSpeed : narrowExitSpeed)));
 
-        float targetBaseHeight = isInNarrow ? narrowHeight : (isOnBar ? barHeight : (isGrinding ? grindHeight : height));
-        float targetBaseDistance = isInNarrow ? narrowDistance : (isOnBar ? barDistance : (isGrinding ? grindDistance : currentDistance));
+        float targetBaseHeight = isInNarrow ? narrowHeight : (isOnBar ? barHeight : (isSliding ? slideHeight : (isGroundSliding ? groundSlideHeight : (isGrinding ? grindHeight : height))));
+        float targetBaseDistance = isInNarrow ? narrowDistance : (isOnBar ? barDistance : (isSliding ? slideDistance : (isGroundSliding ? groundSlideDistance : (isGrinding ? grindDistance : currentDistance))));
         
         smoothNarrowHeight = Mathf.Lerp(smoothNarrowHeight, targetBaseHeight, Time.deltaTime * tSpeed);
         smoothNarrowDistance = Mathf.Lerp(smoothNarrowDistance, targetBaseDistance, Time.deltaTime * tSpeed);
@@ -348,6 +409,16 @@ public class DynamicFollowCamera : MonoBehaviour
             currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * barTransitionSpeed);
             currentY = Mathf.Lerp(currentY, barPitch, Time.deltaTime * barTransitionSpeed);
         }
+        else if (isSliding)
+        {
+            // Trava o ângulo vertical (Pitch) durante o slide
+            currentY = Mathf.Lerp(currentY, slidePitch, Time.deltaTime * slideTransitionSpeed);
+        }
+        else if (isGroundSliding)
+        {
+            // Trava o ângulo vertical (Pitch) durante o ground slide
+            currentY = Mathf.Lerp(currentY, groundSlidePitch, Time.deltaTime * groundSlideTransitionSpeed);
+        }
         else
         {
             bool hasMouseInput = Mathf.Abs(Input.GetAxis("Mouse X")) > 0.1f || Mathf.Abs(Input.GetAxis("Mouse Y")) > 0.1f;
@@ -366,11 +437,11 @@ public class DynamicFollowCamera : MonoBehaviour
                 currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed * grindAutoCenterStrength);
                 currentY = Mathf.Lerp(currentY, 10f, Time.deltaTime * autoCenterSpeed * grindAutoCenterStrength);
             }
-            else if (isSliding)
-            {
-                 currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed * 0.5f);
-                 currentY = Mathf.Lerp(currentY, 15f, Time.deltaTime * autoCenterSpeed * 0.5f);
-            }
+        else if (isSliding || isGroundSliding)
+        {
+             currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed * 0.5f);
+             currentY = Mathf.Lerp(currentY, 15f, Time.deltaTime * autoCenterSpeed * 0.5f);
+        }
         }
 
         float targetWallYaw = isWallRunning ? (IsPlayerOnLeftWall() ? wallRunYawOffset : -wallRunYawOffset) : 0f;
@@ -379,12 +450,14 @@ public class DynamicFollowCamera : MonoBehaviour
         float targetGrindSideOffset = isGrinding ? grindSideOffset : 0f;
         float targetNarrowSideOffset = isInNarrow ? narrowSideOffset : 0f;
         float targetBarSideOffset = isOnBar ? barEntrySideOffset : 0f;
+        float targetSlideSideOffset = isSliding ? slideSideOffset : (isGroundSliding ? groundSlideSideOffset : 0f);
         
         float targetTilt = 0f;
         if (isWallRunning) targetTilt = IsPlayerOnLeftWall() ? wallRunTiltAmount : -wallRunTiltAmount;
         else if (isGrinding) targetTilt = target.right.y * grindTiltAmount;
         else if (isSliding) targetTilt = slideTiltAngle;
-
+        else if (isGroundSliding) targetTilt = groundSlideTiltAngle;
+        
         currentWallRunYaw = Mathf.Lerp(currentWallRunYaw, targetWallYaw, Time.deltaTime * (isWallRunning ? wallRunYawSpeed : 2.5f));
         currentWallRunSideOffset = Mathf.Lerp(currentWallRunSideOffset, targetWallSideOffset, Time.deltaTime * wallRunSideOffsetSpeed);
         
@@ -393,8 +466,9 @@ public class DynamicFollowCamera : MonoBehaviour
         
         currentNarrowSideOffset = Mathf.Lerp(currentNarrowSideOffset, targetNarrowSideOffset, Time.deltaTime * tSpeed);
         currentBarSideOffset = Mathf.Lerp(currentBarSideOffset, targetBarSideOffset, Time.deltaTime * tSpeed);
+        currentSlideSideOffset = Mathf.Lerp(currentSlideSideOffset, targetSlideSideOffset, Time.deltaTime * tSpeed);
         
-        currentTilt = Mathf.Lerp(currentTilt, targetTilt, Time.deltaTime * (isWallRunning ? wallRunTiltSpeed : (isSliding ? slideTiltSpeed : 5f)));
+        currentTilt = Mathf.Lerp(currentTilt, targetTilt, Time.deltaTime * (isWallRunning ? wallRunTiltSpeed : (isSliding ? slideTiltSpeed : (isGroundSliding ? groundSlideTiltSpeed : 5f))));
 
         Quaternion finalRotation = Quaternion.Euler(currentY, currentX, 0);
         finalRotation *= Quaternion.Euler(0, currentWallRunYaw + currentGrindYaw, 0);
@@ -403,7 +477,7 @@ public class DynamicFollowCamera : MonoBehaviour
         Vector3 rayOrigin = target.position + Vector3.up * collisionRaycastOffset;
         
         Vector3 sideDirection = finalRotation * Vector3.right;
-        Vector3 combinedSideOffset = sideDirection * (currentWallRunSideOffset + currentGrindSideOffset + currentNarrowSideOffset + currentBarSideOffset);
+        Vector3 combinedSideOffset = sideDirection * (currentWallRunSideOffset + currentGrindSideOffset + currentNarrowSideOffset + currentBarSideOffset + currentSlideSideOffset);
         rayOrigin += combinedSideOffset;
 
         Vector3 direction = finalRotation * (Vector3.back * finalIdealDistance + Vector3.up * (smoothNarrowHeight - collisionRaycastOffset));
@@ -469,8 +543,18 @@ public class DynamicFollowCamera : MonoBehaviour
     private void HandleRotationInput(float speed)
     {
         currentX += Input.GetAxis("Mouse X") * speed;
-        currentY -= Input.GetAxis("Mouse Y") * speed;
-        currentY = Mathf.Clamp(currentY, minYAngle, maxYAngle);
+
+        // Se estiver no slide, ignora o input vertical do mouse para travar o ângulo
+        if (IsPlayerSliding())
+        {
+            // Não aplica o Input.GetAxis("Mouse Y")
+            // O valor de currentY será suavizado para slidePitch no LateUpdate
+        }
+        else
+        {
+            currentY -= Input.GetAxis("Mouse Y") * speed;
+            currentY = Mathf.Clamp(currentY, minYAngle, maxYAngle);
+        }
     }
 
     private bool IsPlayerGrinding()
@@ -515,8 +599,23 @@ public class DynamicFollowCamera : MonoBehaviour
         return slopeSlideSystem != null && slopeSlideSystem.IsSliding();
     }
 
+    private bool IsPlayerGroundSliding()
+    {
+        return playerMovement != null && playerMovement.IsGroundSliding;
+    }
+
     private float GetPlayerSpeed()
     {
         return playerMovement != null ? playerMovement.currentSpeed : 0f;
+    }
+
+    /// <summary>
+    /// Chamado quando o jogador executa um Quick Turn.
+    /// Inicia um impulso de rotação de 180 graus.
+    /// </summary>
+    public void OnQuickTurn()
+    {
+        currentQuickTurnAdd = 0f;
+        quickTurnTargetAdd = 180f;
     }
 }

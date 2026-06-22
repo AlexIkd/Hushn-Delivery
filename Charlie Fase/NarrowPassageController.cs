@@ -14,6 +14,8 @@ public class NarrowPassageController : MonoBehaviour
     private bool isTransitioning = false;
     private float exitCooldown = 0.5f;
     private float exitTimer = 0f;
+    [SerializeField] private float entryMovementLockDuration = 0.5f; // Duração da trava de movimento após entrar
+    private float movementLockTimer = 0f;
     private NarrowPassageTrigger_Frontiers currentTrigger;
     private Vector3 passageDirection;
     private Vector3 currentTargetPoint;
@@ -38,6 +40,13 @@ public class NarrowPassageController : MonoBehaviour
     {
         if (isInNarrowPassage || isTransitioning || exitTimer > 0) return;
         
+        // Se estiver em slide, cancela IMEDIATAMENTE antes de começar a transição
+        // Isso garante que o colisor volte ao normal ANTES de salvarmos o originalHeight
+        if (playerMovement != null)
+        {
+            playerMovement.CancelGroundSlideImmediate();
+        }
+
         currentTrigger = trigger;
         passageDirection = direction.normalized;
         
@@ -108,6 +117,7 @@ public class NarrowPassageController : MonoBehaviour
         controller.enabled = true;
         isInNarrowPassage = true;
         isTransitioning = false;
+        movementLockTimer = entryMovementLockDuration; // Ativa a trava de movimento
     }
 
     private IEnumerator ExitCoroutine(Vector3 exitPointPosition)
@@ -153,9 +163,15 @@ public class NarrowPassageController : MonoBehaviour
     void Update()
     {
         if (exitTimer > 0) exitTimer -= Time.deltaTime;
+        if (movementLockTimer > 0) movementLockTimer -= Time.deltaTime;
+        
         if (!isInNarrowPassage || isTransitioning) return;
 
-        HandleMovement();
+        // Só permite o movimento se a trava tiver expirado
+        if (movementLockTimer <= 0)
+        {
+            HandleMovement();
+        }
     }
 
     private void HandleMovement()

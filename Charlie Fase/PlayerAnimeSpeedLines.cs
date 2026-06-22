@@ -44,6 +44,15 @@ public class PlayerAnimeSpeedLines : MonoBehaviour
         CreateParticleMaterial();
         CreateTrailParticleSystem();
         CreateBurstParticleSystem();
+
+        // Garante que ghostMaterial não seja nulo
+        if (ghostMaterial == null)
+        {
+            Shader ghostShader = Shader.Find("Standard"); // Shader padrão para o ghost
+            if (ghostShader == null) ghostShader = Shader.Find("Unlit/Color");
+            ghostMaterial = new Material(ghostShader);
+            ghostMaterial.color = ghostStartColor; // Define uma cor inicial para o fallback
+        }
         
         isGhostActive = false;
         meshRenderers = GetComponentsInChildren<SkinnedMeshRenderer>();
@@ -124,12 +133,17 @@ public class PlayerAnimeSpeedLines : MonoBehaviour
         Shader shader = Shader.Find("Universal Render Pipeline/Particles/Unlit");
         if (shader == null) shader = Shader.Find("Particles/Standard Unlit");
         if (shader == null) shader = Shader.Find("Legacy Shaders/Particles/Additive");
-        
+
         if (shader != null)
         {
             particleMaterial = new Material(shader);
-            particleMaterial.color = startColor;
         }
+        else
+        {
+            // Fallback para um material básico se nenhum shader for encontrado
+            particleMaterial = new Material(Shader.Find("Unlit/Color"));
+        }
+        particleMaterial.color = startColor;
     }
 
     private void CreateTrailParticleSystem()
@@ -147,6 +161,12 @@ public class PlayerAnimeSpeedLines : MonoBehaviour
         main.startColor = startColor;
         main.simulationSpace = ParticleSystemSimulationSpace.World;
         
+        var colorOverLifetime = trailParticleSystem.colorOverLifetime;
+        colorOverLifetime.enabled = true;
+        Gradient gradient = new Gradient();
+        gradient.SetKeys(new GradientColorKey[] { new GradientColorKey(startColor, 0.0f), new GradientColorKey(endColor, 1.0f) }, new GradientAlphaKey[] { new GradientAlphaKey(1.0f, 0.0f), new GradientAlphaKey(0.0f, 1.0f) });
+        colorOverLifetime.color = new ParticleSystem.MinMaxGradient(gradient);
+
         var emission = trailParticleSystem.emission;
         emission.enabled = false;
         emission.rateOverTime = trailEmissionRate;
@@ -173,6 +193,12 @@ public class PlayerAnimeSpeedLines : MonoBehaviour
         main.simulationSpace = ParticleSystemSimulationSpace.World;
         main.loop = false;
         
+        var colorOverLifetime = burstParticleSystem.colorOverLifetime;
+        colorOverLifetime.enabled = true;
+        Gradient burstGradient = new Gradient();
+        burstGradient.SetKeys(new GradientColorKey[] { new GradientColorKey(startColor, 0.0f), new GradientColorKey(endColor, 1.0f) }, new GradientAlphaKey[] { new GradientAlphaKey(1.0f, 0.0f), new GradientAlphaKey(0.0f, 1.0f) });
+        colorOverLifetime.color = new ParticleSystem.MinMaxGradient(burstGradient);
+
         var emission = burstParticleSystem.emission;
         emission.enabled = false;
 

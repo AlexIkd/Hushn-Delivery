@@ -56,8 +56,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private float skidLockTimer = 0f;
 
     [Header("Configurações de Salto e Gravidade")]
-    [SerializeField] private float jumpForce = 8f;
-    [SerializeField] private float gravity = 20f;
+    [SerializeField] public float jumpForce = 8f;
+    [SerializeField] public float gravity = 20f;
 
     [Header("Stomp (Queda Rápida)")]
     [SerializeField] private float stompForce = 30f;
@@ -91,10 +91,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [Header("Air Movement")]
     [SerializeField] private float airDashForce = 15f;
     [SerializeField] private float airDashDuration = 0.1f;
-    [SerializeField] private int maxDoubleJumpCharges = 1;
-    private int doubleJumpCharges = 0;
-    [SerializeField] private int maxAirDashCharges = 1;
-    private int airDashCharges = 0;
+    [SerializeField] public int maxDoubleJumpCharges = 1;
+    public int doubleJumpCharges = 0;
+    [SerializeField] public int maxAirDashCharges = 1;
+    public int airDashCharges = 0;
     private bool isDashing = false;
     private float airDashTimer = 0f;
 
@@ -108,6 +108,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [SerializeField] private float prolongedIdleTime = 15f;
     private float idleTimer = 0f;
     private bool isProlongedIdle = false;
+
+    [Header("Trail Effect Integration")]
+    [SerializeField] private SpeedTrailEffect wallRunTrailEffect;
 
     [Header("Configurações de Wall Run")]
     [SerializeField] private float wallRunGravity = 2f;
@@ -180,13 +183,14 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     // Estados internos
     [HideInInspector] public bool IsGliding => isGliding;
     [HideInInspector] public bool IsGrabbingBar { get; set; } = false; // Nova propriedade para indicar se o jogador está agarrado à barra
+    [HideInInspector] public bool isSwinging = false; // NOVO: Flag para o sistema de balanço
     public bool IsInNarrowPassage { get; set; } = false;
     public bool IsWallRunning => isWallRunning; // Propriedade pública para verificar se está em wall run
     [HideInInspector] public bool OnLeftWall => onLeftWall;
     [HideInInspector] public bool OnRightWall => onRightWall;
     private bool isWallRunning = false;
     private bool hasWallRun = false;
-    private bool isGrounded = false;
+    [HideInInspector] public bool isGrounded = false;
     private bool onLeftWall = false;
     private bool onRightWall = false;
     private Vector3 wallNormal;
@@ -246,7 +250,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private WallDashJump wallDashJump;
 
     // Movimento
-    private Vector3 moveDirection = Vector3.zero;
+    public Vector3 moveDirection = Vector3.zero;
     private Vector3 lastMoveDirection = Vector3.zero;
     // Controla se existe input direcional real neste frame.
     // Isso impede que a rotação continue sendo recalculada durante a desaceleração ao soltar o direcional.
@@ -263,7 +267,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [HideInInspector] public Quaternion targetRotation;
 
     // Variáveis para controle de estado de animação de pulo
-    private bool isJumping = false;
+    public bool isJumping = false;
     private bool isFalling = false;
     private bool canJumpAfterGrind = false; // Permite um pulo normal ao sair do rail mesmo no ar
 
@@ -294,6 +298,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private bool cachedIsGroundSliding = false;
     private bool cachedIsGliding = false;
     private bool cachedIsSkidding = false;
+    private bool cachedIsSwinging = false; // NOVO: Cache para o Animator de balanço
     private const float SPEED_CHANGE_THRESHOLD = 0.01f;
 
     // ✅ OTIMIZAÇÕES - CONTROLE DE RAYCASTS
@@ -499,6 +504,13 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             {
                 WallRunMovement();
             }
+        }
+        // NOVO: Prioriza o sistema de balanço se ativo
+        else if (isSwinging)
+        {
+            // O PlayerSwingSystem já está manipulando moveDirection e currentSpeed.
+            // Não aplique gravidade ou input de movimento normal aqui.
+            // Apenas certifique-se de que o CharacterController.Move() seja chamado no final.
         }
         else if (isGliding)
         {
@@ -799,6 +811,13 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
         styleRankSystem?.OnWallRunStart();
 
+        // --- INTEGRAÇÃO SPEED TRAIL ---
+        if (wallRunTrailEffect != null)
+        {
+            wallRunTrailEffect.StartTrail();
+        }
+        // ------------------------------
+
         isWallRunning = true;
         wallRunTimer = 0f;
 
@@ -858,6 +877,13 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         if (!isWallRunning) return;
 
         isWallRunning = false;
+
+        // --- INTEGRAÇÃO SPEED TRAIL ---
+        if (wallRunTrailEffect != null)
+        {
+            wallRunTrailEffect.StopTrail();
+        }
+        // ------------------------------
         lastWallNormal = wallNormal;
         currentSpeed = Mathf.Max(currentSpeed - wallRunSpeedDecrease, 0);
 
@@ -1311,6 +1337,30 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
                 if (isWallRunning)
                     ExitWallRun(true);
+            }
+
+            // ✅ CORREÇÃO: Aplica gravidade quando não está no chão, mesmo com canJumpAfterGrind=true
+            // Isso corrige a flutuação causada pelo autojump do rail
+            if (!controller.isGrounded)
+            {
+                moveDirection.y -= effectiveGravity * Time.deltaTime;
+
+                // ✅ OTIMIZADO: Verificações simplificadas
+                if (moveDirection.y < -0.1f)
+                {
+                    isJumping = false;
+                    isFalling = true;
+                }
+                else if (moveDirection.y > 0.1f)
+                {
+                    isJumping = true;
+                    isFalling = false;
+                }
+                else
+                {
+                    isJumping = false;
+                    isFalling = true;
+                }
             }
         }
         else
@@ -1786,6 +1836,13 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             {
                 animator.SetBool("IsSkidding", isSkidding);
                 cachedIsSkidding = isSkidding;
+            }
+
+            // ✅ NOVO: Só atualiza IsSwinging se mudou
+            if (isSwinging != cachedIsSwinging)
+            {
+                animator.SetBool("IsSwinging", isSwinging);
+                cachedIsSwinging = isSwinging;
             }
     }
 

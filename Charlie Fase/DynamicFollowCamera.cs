@@ -8,11 +8,11 @@ public class DynamicFollowCamera : MonoBehaviour
     [Header("Configurações de Posição Normal")]
     public float baseDistance = 10.0f;
     public float height = 5.0f;
-    public float positionSmoothSpeed = 0.125f;
+    public float positionSmoothSpeed = 0.075f; // Reduzido para maior suavidade
 
     [Header("Configurações de Rotação Manual")]
     public float rotationSpeed = 5.0f;
-    public float autoCenterSpeed = 1.0f;
+    public float autoCenterSpeed = 0.75f; // Reduzido para auto-centralização mais suave
     public float minYAngle = -10f;
     public float maxYAngle = 80f;
 
@@ -25,7 +25,7 @@ public class DynamicFollowCamera : MonoBehaviour
     public LayerMask collisionLayers;
     public float cameraRadius = 0.4f;
     public float collisionPadding = 0.15f;
-    public float collisionResponseSpeed = 20f;
+    public float collisionResponseSpeed = 15f; // Reduzido para resposta de colisão mais suave
     public float collisionRaycastOffset = 1.2f;
 
     [Header("Configurações Durante Horizontal Bar")]
@@ -124,6 +124,12 @@ public class DynamicFollowCamera : MonoBehaviour
     public float slideMotionBlurIntensity = 0.5f;
     public float motionBlurTransitionSpeed = 7.0f;
 
+    [Header("Configurações de Radial Blur")]
+    public bool enableRadialBlur = true;
+    public float radialBlurActivationSpeed = 25f;
+    public float maxRadialBlurIntensity = 0.7f;
+    public float radialBlurTransitionSpeed = 3f;
+
     [Header("Configurações de Pós-Processamento Adicionais")]
     public float slideChromaticAberration = 0.2f;
     public float slideVignetteIntensity = 0.3f;
@@ -141,6 +147,7 @@ public class DynamicFollowCamera : MonoBehaviour
     private float currentMotionBlur = 0f;
     private float currentChromaticAberration = 0f;
     private float currentVignette = 0f;
+    private float currentRadialBlur = 0f;
     private float currentWallRunSideOffset = 0f;
     private float currentGrindSideOffset = 0f;
     private float currentGrindYaw = 0f;
@@ -186,6 +193,7 @@ public class DynamicFollowCamera : MonoBehaviour
     public float CurrentMotionBlur => currentMotionBlur;
     public float CurrentChromaticAberration => currentChromaticAberration;
     public float CurrentVignette => currentVignette;
+    public float CurrentRadialBlur => currentRadialBlur;
 
     void Start()
     {
@@ -348,6 +356,17 @@ public class DynamicFollowCamera : MonoBehaviour
         float targetVignette = isSliding ? slideVignetteIntensity : 0f;
         currentChromaticAberration = Mathf.Lerp(currentChromaticAberration, targetChromatic, Time.deltaTime * ppTransitionSpeed);
         currentVignette = Mathf.Lerp(currentVignette, targetVignette, Time.deltaTime * ppTransitionSpeed);
+
+        // Lógica do Radial Blur baseada na velocidade
+        float targetRadialBlur = 0f;
+        if (enableRadialBlur && playerSpeed >= radialBlurActivationSpeed)
+        {
+            // Calcula a intensidade baseada no quão acima da velocidade de ativação o jogador está
+            // Você pode ajustar a fórmula conforme necessário (ex: normalizar entre a velocidade de ativação e a velocidade máxima)
+            float speedFactor = Mathf.Clamp01((playerSpeed - radialBlurActivationSpeed) / 10f); // Supondo que 10 unidades acima da ativação seja o máximo
+            targetRadialBlur = maxRadialBlurIntensity * speedFactor;
+        }
+        currentRadialBlur = Mathf.Lerp(currentRadialBlur, targetRadialBlur, Time.deltaTime * radialBlurTransitionSpeed);
     }
 
     void LateUpdate()

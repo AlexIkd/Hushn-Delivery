@@ -86,6 +86,59 @@ public class DynamicFollowCamera : MonoBehaviour
     [Header("Configurações Durante Warp")]
     public float warpFOV = 85f;
 
+    [Header("Configurações Durante Sentado (Bench)")]
+    public float sitDistance = 4.0f;
+    public float sitHeight = 1.2f;
+    public float sitPitch = 10f;
+    public float sitTransitionSpeed = 2.0f;
+    public float sitAutoCenterDelay = 2.0f;
+    public float sitAutoCenterSpeed = 1.0f;
+    [Tooltip("Limite de rotação horizontal para os lados (em graus)")]
+    public float sitMaxYawAngle = 60f; 
+    [Tooltip("Limite de rotação vertical (mínimo e máximo)")]
+    public Vector2 sitMinMaxPitch = new Vector2(-5f, 30f);
+    private float lastSitInputTime;
+    private bool isTransitioningToSit = false;
+    private bool wasSittingLastFrame = false;
+
+    [Header("Configurações Durante Glide")]
+    [Tooltip("Altura adicional da câmera enquanto o jogador está planando.")]
+    public float glideHeightOffset = -1.5f;
+    [Tooltip("Distância adicional da câmera enquanto o jogador está planando.")]
+    public float glideDistanceOffset = 2.0f;
+    [Tooltip("Velocidade de transição para os valores de Glide.")]
+    public float glideTransitionSpeed = 3.0f;
+
+    [Header("Configurações Durante Swing (Spider-Man Style)")]
+    public float swingMinFOV = 60f;
+    public float swingMaxFOV = 95f;
+    public float swingMaxSpeedForFOV = 35f;
+    [Tooltip("Altura base da câmera durante o swing.")]
+    public float swingBaseHeight = 4.0f;
+    [Tooltip("Distância base da câmera durante o swing.")]
+    public float swingBaseDistance = 8.0f;
+    [Tooltip("Ajuste de altura ADICIONAL baseado na velocidade vertical (mergulho).")]
+    public float swingDiveHeightOffset = 2.0f;
+    [Tooltip("Distância ADICIONAL baseada na velocidade horizontal.")]
+    public float swingSpeedDistanceMultiplier = 1.5f;
+    public float swingTransitionSpeed = 5f;
+
+    [Header("Configurações de Spin Dash (Cinematográfico)")]
+    [Tooltip("Duração do congelamento total (o impacto inicial).")]
+    public float spinDashFreezeDuration = 0.15f;
+    [Tooltip("Quanto tempo a câmera leva para alcançar o jogador totalmente.")]
+    public float spinDashCatchUpDuration = 0.6f;
+    [Tooltip("Curva de velocidade do retorno. Comece com uma curva que sobe rápido (Ease Out).")]
+    public AnimationCurve catchUpCurve = AnimationCurve.EaseInOut(0, 0, 1, 1);
+    
+    private float spinDashTimer = 0f;
+    private bool isSpinDashFrozen = false;
+    private bool isCatchingUp = false;
+    private float catchUpProgress = 0f;
+    
+    private Vector3 startCatchUpPos;
+    private Quaternion startCatchUpRot;
+
     [Header("Configurações de FOV por Velocidade")]
     public float speedThreshold = 15f;
     public float speedFOV = 65f;
@@ -156,6 +209,13 @@ public class DynamicFollowCamera : MonoBehaviour
     private float currentSlideSideOffset = 0f;
     private float currentWallRunDistanceMultiplier = 1.0f;
     private bool wasTransitioning = false;
+    
+    private float currentGlideHeightFactor = 0f;
+    private float currentGlideDistanceFactor = 0f;
+    
+    private float currentSwingFOV = 60f;
+    private float currentSwingHeightOffset = 0f;
+    private float currentSwingDistanceMultiplier = 1f;
 
     private int narrowLayerIndex;
     private float narrowExitTimer = 0f;
@@ -238,6 +298,28 @@ public class DynamicFollowCamera : MonoBehaviour
     void Update()
     {
         if (target == null) return;
+
+        if (isSpinDashFrozen)
+        {
+            spinDashTimer -= Time.deltaTime;
+            if (spinDashTimer <= 0)
+            {
+                isSpinDashFrozen = false;
+                isCatchingUp = true;
+                catchUpProgress = 0f;
+                startCatchUpPos = transform.position;
+                startCatchUpRot = transform.rotation;
+            }
+            return;
+        }
+        else if (isCatchingUp)
+        {
+            catchUpProgress += Time.deltaTime / spinDashCatchUpDuration;
+            if (catchUpProgress >= 1f)
+            {
+                isCatchingUp = false;
+            }
+        }
         
         bool isGrinding = IsPlayerGrinding();
         bool isInNarrow = IsPlayerInNarrow();
@@ -283,8 +365,57 @@ public class DynamicFollowCamera : MonoBehaviour
         bool isWarping = IsPlayerWarping();
         bool isSliding = IsPlayerSliding();
         bool isGroundSliding = IsPlayerGroundSliding();
+        bool isGliding = IsPlayerGliding();
+        bool isSwinging = IsPlayerSwinging();
+        bool isSitting = IsPlayerSitting();
+
+        // Detecta o início da transição ao sentar
+        if (isSitting && !wasSittingLastFrame)
+        {
+            isTransitioningToSit = true;
+        }
+        else if (!isSitting)
+        {
+            isTransitioningToSit = false;
+        }
+        wasSittingLastFrame = isSitting;
+
+        // Suaviza os fatores de Glide
+        float targetGlideFactor = isGliding ? 1f : 0f;
+        currentGlideHeightFactor = Mathf.Lerp(currentGlideHeightFactor, targetGlideFactor, Time.deltaTime * glideTransitionSpeed);
+        currentGlideDistanceFactor = Mathf.Lerp(currentGlideDistanceFactor, targetGlideFactor, Time.deltaTime * glideTransitionSpeed);
+
+        // Lógica de Swing (Spider-Man Style)
+        float targetFOVFromSwing = -1f; // -1 indica que não está em swing
+
+        if (isSwinging)
+        {
+            float swingSpeed = GetPlayerSpeed();
+            float verticalVel = playerMovement.moveDirection.y;
+            
+            // 1. FOV Dinâmico baseado na velocidade
+            float targetSwingFOV = Mathf.Lerp(swingMinFOV, swingMaxFOV, swingSpeed / swingMaxSpeedForFOV);
+            currentSwingFOV = Mathf.Lerp(currentSwingFOV, targetSwingFOV, Time.deltaTime * swingTransitionSpeed);
+            targetFOVFromSwing = currentSwingFOV;
+
+            // 2. Altura Dinâmica (Mergulho)
+            // Se estiver caindo rápido (dive), a câmera sobe um pouco para mostrar o chão
+            float diveFactor = Mathf.Clamp01(-verticalVel / 20f);
+            float targetHeightOffset = diveFactor * swingDiveHeightOffset;
+            currentSwingHeightOffset = Mathf.Lerp(currentSwingHeightOffset, targetHeightOffset, Time.deltaTime * swingTransitionSpeed);
+
+            // 3. Distância Dinâmica
+            float speedFactor = Mathf.Clamp01(swingSpeed / swingMaxSpeedForFOV);
+            float targetDistMult = 1f + (speedFactor * (swingSpeedDistanceMultiplier - 1f));
+            currentSwingDistanceMultiplier = Mathf.Lerp(currentSwingDistanceMultiplier, targetDistMult, Time.deltaTime * swingTransitionSpeed);
+        }
+        else
+        {
+            currentSwingHeightOffset = Mathf.Lerp(currentSwingHeightOffset, 0f, Time.deltaTime * swingTransitionSpeed);
+            currentSwingDistanceMultiplier = Mathf.Lerp(currentSwingDistanceMultiplier, 1f, Time.deltaTime * swingTransitionSpeed);
+        }
         
-        if (!isInNarrow && !isOnBar)
+        if (!isInNarrow && !isOnBar && !isSitting)
         {
             if (isGrinding && allowGrindCameraRotation)
                 HandleRotationInput(grindRotationSpeed);
@@ -333,7 +464,8 @@ public class DynamicFollowCamera : MonoBehaviour
         float targetFOV = normalFOV;
         float targetDistortion = 0f;
         
-        if (isInNarrow) targetFOV = narrowFOV;
+        if (targetFOVFromSwing > 0) targetFOV = targetFOVFromSwing;
+        else if (isInNarrow) targetFOV = narrowFOV;
         else if (isOnBar) targetFOV = barFOV;
         else if (isWarping) targetFOV = warpFOV;
         else if (isBoosting) targetFOV = boostFOV;
@@ -395,6 +527,8 @@ public class DynamicFollowCamera : MonoBehaviour
         bool isGroundSliding = IsPlayerGroundSliding();
         bool isInNarrow = IsPlayerInNarrow();
         bool isOnBar = IsPlayerOnBar();
+        bool isSwinging = IsPlayerSwinging();
+        bool isSitting = IsPlayerSitting();
         
         if (isInNarrow)
         {
@@ -405,15 +539,25 @@ public class DynamicFollowCamera : MonoBehaviour
             narrowExitTimer -= Time.deltaTime;
         }
 
-        float tSpeed = isInNarrow ? narrowEnterSpeed : (isOnBar ? barTransitionSpeed : (isSliding ? slideTransitionSpeed : (isGroundSliding ? groundSlideTransitionSpeed : narrowExitSpeed)));
+        float tSpeed = isSitting ? sitTransitionSpeed : (isInNarrow ? narrowEnterSpeed : (isOnBar ? barTransitionSpeed : (isSliding ? slideTransitionSpeed : (isGroundSliding ? groundSlideTransitionSpeed : narrowExitSpeed))));
 
-        float targetBaseHeight = isInNarrow ? narrowHeight : (isOnBar ? barHeight : (isSliding ? slideHeight : (isGroundSliding ? groundSlideHeight : (isGrinding ? grindHeight : height))));
-        float targetBaseDistance = isInNarrow ? narrowDistance : (isOnBar ? barDistance : (isSliding ? slideDistance : (isGroundSliding ? groundSlideDistance : (isGrinding ? grindDistance : currentDistance))));
+        float targetBaseHeight = isSitting ? sitHeight : (isInNarrow ? narrowHeight : (isOnBar ? barHeight : (isSliding ? slideHeight : (isGroundSliding ? groundSlideHeight : (isGrinding ? grindHeight : (isSwinging ? swingBaseHeight : height))))));
+        float targetBaseDistance = isSitting ? sitDistance : (isInNarrow ? narrowDistance : (isOnBar ? barDistance : (isSliding ? slideDistance : (isGroundSliding ? groundSlideDistance : (isGrinding ? grindDistance : (isSwinging ? swingBaseDistance : currentDistance))))));
         
+        // Aplica o offset de Glide
+        targetBaseHeight += glideHeightOffset * currentGlideHeightFactor;
+        targetBaseDistance += glideDistanceOffset * currentGlideDistanceFactor;
+        
+        // Aplica o offset de Swing (Spider-Man Style - Dive e Outros)
+        targetBaseHeight += currentSwingHeightOffset;
+
         smoothNarrowHeight = Mathf.Lerp(smoothNarrowHeight, targetBaseHeight, Time.deltaTime * tSpeed);
         smoothNarrowDistance = Mathf.Lerp(smoothNarrowDistance, targetBaseDistance, Time.deltaTime * tSpeed);
         
         float targetDistMultiplier = isWallRunning ? wallRunDistanceMultiplier : 1.0f;
+        // Combina o multiplicador de Wall Run com o de Swing
+        targetDistMultiplier *= currentSwingDistanceMultiplier;
+
         currentWallRunDistanceMultiplier = Mathf.Lerp(currentWallRunDistanceMultiplier, targetDistMultiplier, Time.deltaTime * wallRunDistanceTransitionSpeed);
         
         float finalIdealDistance = smoothNarrowDistance * currentWallRunDistanceMultiplier;
@@ -438,12 +582,56 @@ public class DynamicFollowCamera : MonoBehaviour
             // Trava o ângulo vertical (Pitch) durante o ground slide
             currentY = Mathf.Lerp(currentY, groundSlidePitch, Time.deltaTime * groundSlideTransitionSpeed);
         }
+        else if (isSitting)
+        {
+            float targetYaw = target.eulerAngles.y;
+
+            if (isTransitioningToSit)
+            {
+                // Durante a transição inicial, força a câmera para a posição ideal e ignora input
+                currentX = Mathf.LerpAngle(currentX, targetYaw, Time.deltaTime * sitTransitionSpeed * 2f);
+                currentY = Mathf.Lerp(currentY, sitPitch, Time.deltaTime * sitTransitionSpeed * 2f);
+
+                // Se estiver perto o suficiente do alvo, libera o controle para o jogador
+                if (Mathf.Abs(Mathf.DeltaAngle(currentX, targetYaw)) < 1f && Mathf.Abs(currentY - sitPitch) < 1f)
+                {
+                    isTransitioningToSit = false;
+                    lastSitInputTime = Time.time; // Reseta o timer de inatividade
+                }
+            }
+            else
+            {
+                bool hasMouseInput = Mathf.Abs(Input.GetAxis("Mouse X")) > 0.1f || Mathf.Abs(Input.GetAxis("Mouse Y")) > 0.1f;
+                if (hasMouseInput)
+                {
+                    lastSitInputTime = Time.time;
+                    
+                    // Rotação manual com limites específicos de sentado
+                    currentX += Input.GetAxis("Mouse X") * rotationSpeed;
+                    currentY -= Input.GetAxis("Mouse Y") * rotationSpeed;
+
+                    // Limita o Yaw (Horizontal) relativo à frente do banco
+                    float diffX = Mathf.DeltaAngle(targetYaw, currentX);
+                    diffX = Mathf.Clamp(diffX, -sitMaxYawAngle, sitMaxYawAngle);
+                    currentX = targetYaw + diffX;
+
+                    // Limita o Pitch (Vertical)
+                    currentY = Mathf.Clamp(currentY, sitMinMaxPitch.x, sitMinMaxPitch.y);
+                }
+                else if (Time.time - lastSitInputTime > sitAutoCenterDelay)
+                {
+                    // Auto-centraliza suavemente após o delay de inatividade
+                    currentX = Mathf.LerpAngle(currentX, targetYaw, Time.deltaTime * sitAutoCenterSpeed);
+                    currentY = Mathf.Lerp(currentY, sitPitch, Time.deltaTime * sitAutoCenterSpeed);
+                }
+            }
+        }
         else
         {
             bool hasMouseInput = Mathf.Abs(Input.GetAxis("Mouse X")) > 0.1f || Mathf.Abs(Input.GetAxis("Mouse Y")) > 0.1f;
             float rotSpeed = autoCenterSpeed;
 
-            if (!hasMouseInput && !isGrinding && !isSliding && !isWallRunning && !isOnBar)
+            if (!hasMouseInput && !isGrinding && !isSliding && !isWallRunning && !isOnBar && !isSitting)
                 currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * rotSpeed);
             else if (isWallRunning && wallRunAutoCenterStrength > 0f)
             {
@@ -518,9 +706,32 @@ public class DynamicFollowCamera : MonoBehaviour
 
         if (!isBeingTransitioned)
         {
-            transform.position = Vector3.Lerp(transform.position, desiredPosition, positionSmoothSpeed * (Time.deltaTime * 60f));
-            transform.rotation = Quaternion.Slerp(transform.rotation, finalRotation, positionSmoothSpeed * (Time.deltaTime * 60f));
+            if (isCatchingUp)
+            {
+                // Sistema Cinematográfico: Interpola entre a posição onde parou e a posição ideal do jogador
+                // usando a AnimationCurve para dar a sensação de aceleração/impulso.
+                float curveValue = catchUpCurve.Evaluate(catchUpProgress);
+                transform.position = Vector3.Lerp(startCatchUpPos, desiredPosition, curveValue);
+                transform.rotation = Quaternion.Slerp(startCatchUpRot, finalRotation, curveValue);
+            }
+            else
+            {
+                // Movimento normal de acompanhamento
+                transform.position = Vector3.Lerp(transform.position, desiredPosition, positionSmoothSpeed * (Time.deltaTime * 60f));
+                transform.rotation = Quaternion.Slerp(transform.rotation, finalRotation, positionSmoothSpeed * (Time.deltaTime * 60f));
+            }
         }
+    }
+
+    /// <summary>
+    /// Ativa o efeito de congelamento da câmera para o Spin Dash.
+    /// </summary>
+    public void TriggerSpinDashFreeze()
+    {
+        spinDashTimer = spinDashFreezeDuration;
+        isSpinDashFrozen = true;
+        isCatchingUp = false;
+        // A posição inicial do catch-up será capturada quando o freeze terminar
     }
 
     public void TriggerWallDashShake()
@@ -621,6 +832,21 @@ public class DynamicFollowCamera : MonoBehaviour
     private bool IsPlayerGroundSliding()
     {
         return playerMovement != null && playerMovement.IsGroundSliding;
+    }
+
+    private bool IsPlayerGliding()
+    {
+        return playerMovement != null && playerMovement.IsGliding;
+    }
+
+    private bool IsPlayerSwinging()
+    {
+        return playerMovement != null && playerMovement.isSwinging;
+    }
+
+    private bool IsPlayerSitting()
+    {
+        return playerMovement != null && playerMovement.IsSitting;
     }
 
     private float GetPlayerSpeed()

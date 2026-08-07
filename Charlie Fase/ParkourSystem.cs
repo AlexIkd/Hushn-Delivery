@@ -64,12 +64,15 @@ public class ParkourSystem : MonoBehaviour
     
     [Header("Proximity & Landing")]
     [SerializeField] private float targetReachThreshold = 0.1f;
+    [SerializeField] private float landingGroundOffset = 0.05f; // Pequeno offset para evitar afundar
+    [SerializeField] private LayerMask groundLayer; // Layer específica para o chão
 
     [Header("Debug")]
     [SerializeField] private bool debugMode = false;
 
 
     private bool isParkourActive = false;
+    public bool IsParkourActive => isParkourActive;
     private float originalControllerHeight;
     private Vector3 originalControllerCenter;
     private float parkourStartSpeed = 0f;
@@ -232,10 +235,12 @@ public class ParkourSystem : MonoBehaviour
         float finalLandingDistance = Mathf.Max(move.landingDistance * landingDistanceMultiplier, distanceBySpeed);
         Vector3 endPos = landingPoint + cachedTransform.forward * (finalLandingDistance * 0.5f);
 
-        // Raycast para ground check
-        if (Physics.Raycast(endPos + Vector3.up * GROUND_CHECK_HEIGHT, Vector3.down, out RaycastHit groundHit, GROUND_CHECK_DISTANCE, obstacleLayer))
+        // Raycast para ground check - Usa obstacleLayer e groundLayer para precisão
+        LayerMask combinedLayer = obstacleLayer | groundLayer;
+        if (Physics.Raycast(endPos + Vector3.up * GROUND_CHECK_HEIGHT, Vector3.down, out RaycastHit groundHit, GROUND_CHECK_DISTANCE, combinedLayer))
         {
-            endPos.y = groundHit.point.y;
+            // Ajusta endPos para a altura real do chão + offset do CharacterController
+            endPos.y = groundHit.point.y + (originalControllerHeight * 0.5f) + landingGroundOffset;
         }
 
         float elapsedTime = 0f;
@@ -270,6 +275,17 @@ public class ParkourSystem : MonoBehaviour
             
             if (controller.enabled)
             {
+                // Verifica se estamos muito perto do chão para interromper a descida brusca
+                if (t > 0.8f)
+                {
+                    RaycastHit hit;
+                    if (Physics.Raycast(cachedTransform.position + Vector3.up * 0.1f, Vector3.down, out hit, 0.5f, combinedLayer))
+                    {
+                        // Se estivermos prestes a tocar o chão, suavizamos a descida final
+                        bezierTarget.y = Mathf.Max(bezierTarget.y, hit.point.y + (originalControllerHeight * 0.5f) + landingGroundOffset);
+                    }
+                }
+
                 controller.Move(moveDiff);
             }
 
@@ -281,6 +297,15 @@ public class ParkourSystem : MonoBehaviour
         }
 
         // --- FINALIZAÇÃO SUAVE ---
+        // Antes de restaurar o collider, garante que a posição final é válida
+        RaycastHit finalHit;
+        if (Physics.Raycast(cachedTransform.position + Vector3.up * 1f, Vector3.down, out finalHit, 2f, combinedLayer))
+        {
+            Vector3 finalPos = cachedTransform.position;
+            finalPos.y = finalHit.point.y + (originalControllerHeight * 0.5f) + landingGroundOffset;
+            cachedTransform.position = finalPos;
+        }
+
         controller.height = originalControllerHeight;
         controller.center = originalControllerCenter;
 

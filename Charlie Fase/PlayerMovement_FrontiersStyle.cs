@@ -24,6 +24,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private float originalHeight;
     private float originalCenterY;
     private bool isGroundSliding = false;
+    private bool isSitting = false;
+    public bool IsSitting => isSitting;
     private float currentColliderHeight;
     [Header("Configurações de Velocidade")]
     [SerializeField] public float maxSpeed = 15f;
@@ -49,6 +51,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [Header("Skid Settings")]
     [Tooltip("Velocidade de frenagem durante o skid. Valores maiores param o personagem mais rápido.")]
     [SerializeField] private float skidBrakeSpeed = 30f;
+    [SerializeField] private float highSpeedSkidMultiplier = 2.5f; // Multiplicador para velocidades acima da máxima normal
     [Tooltip("Velocidade mínima que o personagem precisa ter para que o skid possa ser ativado.")]
     [SerializeField] private float skidMinActivationSpeed = 2f;
     [Tooltip("Tempo que o jogador fica impossibilitado de se mover após o skid terminar.")]
@@ -67,6 +70,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [SerializeField] private KeyCode stompKey = KeyCode.LeftControl;
     [SerializeField] private ParticleSystem stompParticles;
     [SerializeField] private float stompCooldownAfterDoubleJump = 0.5f; // Cooldown após pulo duplo
+    [SerializeField] private float stompCooldownAfterRailJump = 0.5f; // Cooldown após pular do rail
     private float stompCooldownTimer = 0f;
     private bool isStomping = false;
 
@@ -75,6 +79,11 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     public void CancelGlide() { if (isGliding) StopGlide(); }
     public void CancelAirDash() { if (isDashing) StopAirDash(); }
     public void CancelStomp() { if (isStomping) isStomping = false; if (animator != null) animator.SetBool("IsStomping", false); if (isGroundSliding) StopGroundSlide(); } // Stomp não tem um método Stop dedicado, então resetamos a flag e o animator diretamente.
+
+    public void SetStompCooldown(float duration)
+    {
+        stompCooldownTimer = duration;
+    }
 
     public void CancelGroundSlideImmediate()
     {
@@ -180,12 +189,24 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [SerializeField] private float barWallRunCooldown = 0.5f;
     private float barWallRunCooldownTimer = 0f;
 
+    [Header("Wall Cancel Lock (Pulo de Cancelamento)")]
+    [Tooltip("Tempo em segundos que o input é bloqueado após cancelar o Wall Dash Jump, preservando o impulso de recuo.")]
+    [SerializeField] private float wallCancelLockDuration = 0.2f;
+
+    private float groundCheckCooldown = 0f;
+    private float springLaunchLockTimer = 0f;
+
+    [Header("Bloqueio de Air Dash após Pulos de Parede")]
+    [Tooltip("Tempo em que o Air Dash fica bloqueado após o pulo de cancelamento (manual ou automático pelo timer do slide). 0 = sem bloqueio.")]
+    [SerializeField] private float airDashLockAfterWallCancel = 0.5f;
+
     // Estados internos
     [HideInInspector] public bool IsGliding => isGliding;
     [HideInInspector] public bool IsGrabbingBar { get; set; } = false; // Nova propriedade para indicar se o jogador está agarrado à barra
     [HideInInspector] public bool isSwinging = false; // NOVO: Flag para o sistema de balanço
     public bool IsInNarrowPassage { get; set; } = false;
     public bool IsWallRunning => isWallRunning; // Propriedade pública para verificar se está em wall run
+    public bool IsSkidding => isSkidding; // Propriedade pública para verificar se está em skid
     [HideInInspector] public bool OnLeftWall => onLeftWall;
     [HideInInspector] public bool OnRightWall => onRightWall;
     private bool isWallRunning = false;
@@ -213,6 +234,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     private void ExecuteRailJump()
     {
+        // ✅ CORREÇÃO: Cancela o stomp antes de pular do rail
+        if (isStomping) CancelStomp();
+
         // Avisa o sistema de Rail que o jogador quer sair (pular)
         if (railRide != null)
         {
@@ -244,6 +268,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         }
 
         if (showDebugInfo) Debug.Log("🚀 Pulo executado diretamente do Rail!");
+
+        // Aplica cooldown no stomp ao pular do rail
+        stompCooldownTimer = stompCooldownAfterRailJump;
     }
 
     // ✅ NOVO: Referência ao WallDashJump para bloquear Wall Run
@@ -268,7 +295,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     // Variáveis para controle de estado de animação de pulo
     public bool isJumping = false;
-    private bool isFalling = false;
+    public bool isFalling = false;
     private bool canJumpAfterGrind = false; // Permite um pulo normal ao sair do rail mesmo no ar
 
     // Velocidade externa
@@ -378,6 +405,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                 {
                     if (isGliding) StopGlide();
                     if (isDashing) StopAirDash();
+                    if (isStomping) CancelStomp(); // ✅ CORREÇÃO: Cancela o stomp ao entrar no rail
                     
                     // Força a limpeza das partículas de dash ao entrar no rail
                     StopAirDashParticles(true);
@@ -401,6 +429,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
                     }
                     ExecuteRailJump();
                 }
+
+                // ✅ NOVO: Atualiza o animator antes de retornar, para garantir que IsGrounded=false chegue ao Animator
+                UpdateAnimator();
                 return;
             }
 
@@ -418,9 +449,14 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             }
         }
 
-        // Bloqueia o movimento normal se estiver agarrado à barra ou em passagem estreita
-        if (IsGrabbingBar || IsInNarrowPassage)
+        // Bloqueia o movimento normal se estiver agarrado à barra, em passagem estreita ou sentado
+        if (IsGrabbingBar || IsInNarrowPassage || isSitting)
         {
+            if (isSitting)
+            {
+                moveDirection = Vector3.zero;
+                currentSpeed = 0f;
+            }
             return;
         }
 
@@ -430,34 +466,52 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             barLaunchLockTimer -= Time.deltaTime;
         }
 
-        // 1. Pré-processamento e Verificações de Estado
-        HandleGroundSlideInput();
-        UpdateColliderHeight();
-        CheckGround();
-        CheckWallRun();
-        HandleStomp();
-        HandleAirDash();
-        HandleAirInput();
-        UpdateRotationLock();
-        UpdateAirTrickCooldown();
-        HandleProlongedIdle();
-
-        // Atualiza o timer de carência do glide
-        if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
-        if (isGliding) glideActiveTimer += Time.deltaTime; // Incrementa o timer de duração do glide
-
-        if (glideCooldownTimer > 0) glideCooldownTimer -= Time.deltaTime;
-        if (stompCooldownTimer > 0) stompCooldownTimer -= Time.deltaTime;
-        if (barWallRunCooldownTimer > 0) barWallRunCooldownTimer -= Time.deltaTime;
-        if (airDashCooldownTimer > 0) airDashCooldownTimer -= Time.deltaTime;
+        // ✅ WALL DASH JUMP: Verifica se WallDashJump está ativo
+        bool isWallClimbActive = (wallDashJump != null && wallDashJump.IsWallDashing());
         
-        // IMPORTANTE: HandleGlide deve vir DEPOIS de processar o pulo duplo no ApplyGravity
-        // mas antes de aplicar o movimento final.
-        // No entanto, para capturar o GetButtonDown corretamente, vamos manter a ordem
-        HandleGlide();
+        if (isWallClimbActive)
+        {
+            // Durante wall climb/stick/slide, ainda atualiza o CheckGround para detecção de chão
+            CheckGround();
+        }
+        else
+        {
+            // 1. Pré-processamento e Verificações de Estado
+            HandleGroundSlideInput();
+            UpdateColliderHeight();
+            CheckGround();
+            CheckWallRun();
+            HandleStomp();
+            HandleAirDash();
+            HandleAirInput();
+            UpdateRotationLock();
+            UpdateAirTrickCooldown();
+            HandleProlongedIdle();
 
+            // Atualiza o timer de carência do glide
+            if (glideGraceTimer > 0) glideGraceTimer -= Time.deltaTime;
+            if (isGliding) glideActiveTimer += Time.deltaTime; // Incrementa o timer de duração do glide
+
+            if (glideCooldownTimer > 0) glideCooldownTimer -= Time.deltaTime;
+            if (stompCooldownTimer > 0) stompCooldownTimer -= Time.deltaTime;
+            if (barWallRunCooldownTimer > 0) barWallRunCooldownTimer -= Time.deltaTime;
+            if (airDashCooldownTimer > 0) airDashCooldownTimer -= Time.deltaTime;
+            if (wallCancelLockTimer > 0) wallCancelLockTimer -= Time.deltaTime; // ✅ CORREÇÃO: countdown do lock pós-cancelamento
+            if (groundCheckCooldown > 0) groundCheckCooldown -= Time.deltaTime;
+            if (springLaunchLockTimer > 0) springLaunchLockTimer -= Time.deltaTime;
+            
+            // IMPORTANTE: HandleGlide deve vir DEPOIS de processar o pulo duplo no ApplyGravity
+            // mas antes de aplicar o movimento final.
+            // No entanto, para capturar o GetButtonDown corretamente, vamos manter a ordem
+            HandleGlide();
+        }
+
+        // ✅ WALL DASH JUMP: Se WallDashJump está ativo, pula toda a lógica de movimento normal
+        // O moveDirection já foi definido pelo WallDashJump nos métodos UpdateWallClimb/Stick/Slide
+        // (isWallClimbActive já declarado acima)
+        
         // 2. Lógica de Recuperação
-        if (recoveringFromWallRun)
+        if (!isWallClimbActive && recoveringFromWallRun)
         {
             wallRunRecoveryTimer -= Time.deltaTime;
             if (wallRunRecoveryTimer <= 0f)
@@ -469,20 +523,31 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         }
 
         // 3. ✅ OTIMIZADO: Aplica velocidade externa
-        if (externalVelocity.sqrMagnitude > 0.01f)
+        if (!isWallClimbActive && externalVelocity.sqrMagnitude > 0.01f)
         {
             moveDirection += externalVelocity;
             externalVelocity = Vector3.Lerp(externalVelocity, Vector3.zero, Time.deltaTime * 5f);
         }
 
         // 4. MOVIMENTO
-        // Lógica de movimento terrestre
-        if (animatorBusy || isQuickTurning || isSkidding)
+        // ✅ WALL DASH JUMP: Se WallDashJump está ativo, bloqueia toda movimentação normal
+        // O WallDashJump já definiu moveDirection diretamente (up/zero/down)
+        if (isWallClimbActive)
+        {
+            // Não faz nada - moveDirection já está definido pelo WallDashJump
+            // Não aplica gravidade, não aplica input, não aplica velocidade horizontal
+        }
+        else if (animatorBusy || isQuickTurning || isSkidding || wallCancelLockTimer > 0)
         {
             // Se estiver skidding, apenas aplica a gravidade e deixa a velocidade ser controlada pela lógica de skid
             if (isSkidding)
             {
-                currentSpeed = Mathf.MoveTowards(currentSpeed, 0, skidBrakeSpeed * Time.deltaTime);
+                // Se a velocidade inicial do skid for maior que a velocidade máxima normal (ex: Spin Dash),
+                // aplicamos uma frenagem muito mais brusca.
+                float effectiveBrakeSpeed = (currentSpeed > maxSpeed) ? (skidBrakeSpeed * highSpeedSkidMultiplier) : skidBrakeSpeed;
+
+                currentSpeed = Mathf.MoveTowards(currentSpeed, 0, effectiveBrakeSpeed * Time.deltaTime);
+                
                 if (currentSpeed <= 0.5f) // Sai do skid quando a velocidade for muito baixa
                 {
                     isSkidding = false;
@@ -518,13 +583,22 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         }
         else
         {
-            HandleInputAndMovement();
-            HandleRotation();
-            ApplyGravity();
-
-            if (isDashing)
+            if (wallCancelLockTimer > 0)
             {
-                AirDashMovement();
+                // ✅ CORREÇÃO: Durante o lock pós-cancelamento, apenas aplica gravidade
+                // Preserva o moveDirection e currentSpeed injetados pelo WallDashJump
+                ApplyGravity();
+            }
+            else
+            {
+                HandleInputAndMovement();
+                HandleRotation();
+                ApplyGravity();
+
+                if (isDashing)
+                {
+                    AirDashMovement();
+                }
             }
         }
 
@@ -564,7 +638,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         // Atualiza o cooldown do Quick Turn
         if (quickTurnCooldownTimer > 0) quickTurnCooldownTimer -= Time.deltaTime;
 
-        if (recoveringFromWallRun || isDashing || barLaunchLockTimer > 0) return; // Bloqueia input se estiver em lock de lançamento
+        if (recoveringFromWallRun || isDashing || barLaunchLockTimer > 0 || springLaunchLockTimer > 0) return; // Bloqueia input se estiver em lock de lançamento
 
         float horizontalInput = Input.GetAxis("Horizontal");
         float verticalInput = Input.GetAxis("Vertical");
@@ -714,6 +788,12 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     private void CheckGround()
     {
+        if (groundCheckCooldown > 0 || (railRide != null && railRide.isGrinding))
+        {
+            isGrounded = false;
+            return;
+        }
+
         isGrounded = controller.isGrounded;
 
         // ✅ OTIMIZADO: Verificação adicional apenas se necessário
@@ -726,7 +806,22 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
         if (isGrounded)
         {
-            isStomping = false;
+            // ✅ CORREÇÃO: Reseta estados de pulo e queda ao atingir o chão (especialmente após Stomp)
+            if (isStomping || isFalling || isJumping)
+            {
+                isJumping = false;
+                isFalling = false;
+                isStomping = false;
+                
+                if (animator != null)
+                {
+                    animator.SetBool("IsJumping", false);
+                    animator.SetBool("IsFalling", false);
+                    animator.SetBool("IsStomping", false);
+                    animator.SetBool("IsGrounded", true);
+                }
+            }
+
             hasWallRun = false;
             canJumpAfterGrind = false;
             // Se estiver no chão e planando, e não houver tempo de carência, para o glide.
@@ -1024,6 +1119,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private float barLaunchLockTimer = 0f;
     private const float BAR_LAUNCH_LOCK_DURATION = 0.5f;
 
+    // ✅ CORREÇÃO: Lock temporário após cancelamento do Wall Dash Jump (pulo para trás)
+    // Impede que o input padrão sobrescreva o impulso de recuo por um breve momento
+    private float wallCancelLockTimer = 0f;
+
     // Método para receber o impulso da barra horizontal
     public void SetMovementFromBar(Vector3 velocity)
     {
@@ -1167,6 +1266,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         // O rotationLockTimer agora usa o valor máximo entre o tempo de trava de rotação e a duração mínima definida manualmente
         rotationLockTimer = Mathf.Max(airTrickRotationLockTime, minAirTrickDuration);
         airTrickCooldownTimer = airTrickCooldown;
+        
+        // Aplica cooldown no Air Dash imediatamente ao usar o Air Trick
+        airDashCooldownTimer = airDashCooldownAfterAirTrick;
+
         animatorBusy = true;
 
         if (enableAirTrickParticles && airTrickParticles != null)
@@ -1175,7 +1278,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         }
 
         if (showDebugInfo)
-            Debug.Log($"🌀 Air Trick - Rotação travada por {airTrickRotationLockTime}s");
+            Debug.Log($"🌀 Air Trick - Rotação travada por {airTrickRotationLockTime}s | Air Dash Cooldown: {airDashCooldownAfterAirTrick}s");
 
         if (isGliding) StopGlide(); // Cancela glide ao iniciar air trick
     }
@@ -1292,13 +1395,18 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
         float effectiveGravity = isWallRunning ? wallRunGravity : gravity;
 
-        bool canDoNormalJump = controller.isGrounded || canJumpAfterGrind;
+        // CORREÇÃO: Usa a variável interna isGrounded que respeita o cooldown de lançamento
+        bool canDoNormalJump = isGrounded || canJumpAfterGrind;
 
         if (canDoNormalJump)
         {
-            if (controller.isGrounded)
+            if (isGrounded)
             {
-                moveDirection.y = -controller.stepOffset;
+                // Só aplica a força de "colagem" ao chão se não houver força ascendente pendente
+                if (moveDirection.y <= 0)
+                {
+                    moveDirection.y = -controller.stepOffset;
+                }
                 isFalling = false;
             }
 
@@ -1447,6 +1555,14 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             {
                 if (stompCooldownTimer <= 0)
                 {
+                    // ✅ NOVO: Verifica altura mínima para o Stomp
+                    // Lança um raio para baixo para ver se o chão está muito perto
+                    if (Physics.Raycast(transform.position, Vector3.down, stompMinHeight, groundMask))
+                    {
+                        if (showDebugInfo) Debug.Log($"🚫 Stomp bloqueado: Altura insuficiente (mínimo: {stompMinHeight}m)");
+                        return;
+                    }
+
                     StartStomp();
                 }
                 else if (showDebugInfo)
@@ -1493,7 +1609,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     private void HandleAirDash()
     {
-        if (!controller.isGrounded && !isWallRunning && !isDashing && !isStomping && airDashCharges > 0 && airDashCooldownTimer <= 0)
+        // ✅ NOVO: Verifica se o Air Dash está bloqueado pelo sistema de parede
+        bool isAirDashLocked = (wallDashJump != null && wallDashJump.IsAirDashLocked());
+
+        if (!controller.isGrounded && !isWallRunning && !isDashing && !isStomping && !isSwinging && airDashCharges > 0 && airDashCooldownTimer <= 0 && !isAirDashLocked)
         {
             if (Input.GetKeyDown(KeyCode.LeftShift))
             {
@@ -1759,9 +1878,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             cachedSpeed = normalizedSpeed;
         }
 
-        // ✅ CORREÇÃO CIRÚRGICA: Impedimos que o Animator receba IsGrounded = true se estivermos no meio de um Stomp.
-        // Isso resolve o bug da animação de aterrissagem tocar prematuramente.
-        bool animatorGrounded = controller.isGrounded && !isStomping;
+        // ✅ CORREÇÃO CIRÚRGICA: Usamos a variável isGrounded interna em vez do controller.isGrounded
+        // Isso permite que o sistema de cooldown e o grind rail forcem isGrounded = false.
+        bool animatorGrounded = isGrounded && !isStomping;
 
         if (animatorGrounded != cachedIsGrounded)
         {
@@ -1882,24 +2001,34 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     // Método para executar um pulo forçado (usado pelo Rail)
     public void ExecuteJump(Vector3 velocity)
     {
+        ExecuteJump(velocity, 0f);
+    }
+
+    public void ExecuteJump(Vector3 velocity, float gCheckCooldown)
+    {
         moveDirection.y = velocity.y;
+        groundCheckCooldown = gCheckCooldown;
         
-        // Se a velocidade tiver componentes horizontais, aplica como externalVelocity
+        // Se a velocidade tiver componentes horizontais, atualiza o momentum do jogador
         Vector3 horizontalVelocity = new Vector3(velocity.x, 0, velocity.z);
-        if (horizontalVelocity.magnitude > 0)
+        if (horizontalVelocity.magnitude > 0.01f)
         {
-            AddExternalVelocity(horizontalVelocity);
+            currentSpeed = horizontalVelocity.magnitude;
+            lastMoveDirection = horizontalVelocity.normalized;
+            moveDirection.x = horizontalVelocity.x;
+            moveDirection.z = horizontalVelocity.z;
         }
 
         isJumping = true;
         isFalling = false;
-        canJumpAfterGrind = false; // Consome o pulo normal
+        isGrounded = false;
+        canJumpAfterGrind = false;
         
         if (enableJumpParticles && jumpParticles != null)
             StartJumpParticles();
             
         if (showDebugInfo)
-            Debug.Log("🚀 Pulo executado via script externo (Rail)");
+            Debug.Log("🚀 Pulo/Lançamento executado via script externo");
     }
 
     // ======================================================
@@ -2090,6 +2219,52 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         moveDirection = Vector3.zero;
     }
 
+    /// <summary>
+    /// ✅ CORREÇÃO: Ativa o lock temporário de movimento após o cancelamento do Wall Dash Jump.
+    /// Impede que HandleInputAndMovement sobrescreva o impulso de recuo injetado pelo WallDashJump.
+    /// O lock dura WALL_CANCEL_LOCK_DURATION (0.2s).
+    /// </summary>
+    public void SetWallCancelLock()
+    {
+        wallCancelLockTimer = wallCancelLockDuration;
+        // ✅ NOVO: Bloqueia o Air Dash durante o lock pós-cancelamento
+        if (wallDashJump != null && airDashLockAfterWallCancel > 0f)
+        {
+            wallDashJump.SetAirDashLock(airDashLockAfterWallCancel);
+        }
+        // Garante que estados conflitantes não estejam ativos
+        isSkidding = false;
+        isQuickTurning = false;
+        skidLockTimer = 0f;
+        if (showDebugInfo)
+            Debug.Log($"🔒 Lock de movimento ativado após cancelamento do Wall Dash ({wallCancelLockDuration}s)");
+    }
+
+    /// <summary>
+    /// ✅ NOVO: Método público para o WallDashJump ativar o bloqueio de Air Dash.
+    /// Chamado pelo SetWallCancelLock e internamente pelo WallDashJump.
+    /// </summary>
+    public void SetAirDashLock(float duration)
+    {
+        if (wallDashJump != null)
+        {
+            wallDashJump.SetAirDashLock(duration);
+        }
+    }
+
+    public void SetSittingState(bool sitting)
+    {
+        isSitting = sitting;
+        if (sitting)
+        {
+            moveDirection = Vector3.zero;
+            currentSpeed = 0f;
+            if (isGliding) StopGlide();
+            if (isDashing) StopAirDash();
+            if (isStomping) CancelStomp();
+        }
+    }
+
     // ======================================================
     // DEBUG E PROPRIEDADES
     // ======================================================
@@ -2130,6 +2305,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     public void ResetVerticalVelocity()
     {
         moveDirection.y = 0;
+        isStomping = false; // ✅ CORREÇÃO: Força o reset da flag
+        if (animator != null) animator.SetBool("IsStomping", false);
+        // CancelStomp() também pode ser chamado para garantir a limpeza de partículas
+        CancelStomp();
     }
 
     private void HandleGroundSlideInput()
@@ -2202,5 +2381,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         if (groundSlideParticles != null) groundSlideParticles.Stop();
         
         // Não interage com SlopeSlideSystem aqui, pois é um slide de chão
+    }
+
+    public void SetSpringLaunchLock(float duration)
+    {
+        springLaunchLockTimer = duration;
     }
 }

@@ -208,17 +208,45 @@ public class WarpSystem : MonoBehaviour
     private void UpdateUI()
     {
         if (warpIcon == null) return;
-        bool shouldShow = currentTarget != null && Time.time >= lastWarpTime + warpCooldown;
+        
+        // Bloqueia o warp se estiver fazendo wallrun
+        bool isWallRunning = IsPlayerWallRunning();
+        
+        bool shouldShow = currentTarget != null && Time.time >= lastWarpTime + warpCooldown && !isWallRunning;
         warpIcon.gameObject.SetActive(shouldShow);
         if (shouldShow) warpIcon.position = mainCamera.WorldToScreenPoint(currentTarget.transform.position);
     }
 
     private void HandleInput()
     {
+        // Não permite iniciar o warp se estiver fazendo wallrun
+        if (IsPlayerWallRunning()) return;
+
         if ((Input.GetKeyDown(warpKey) || Input.GetMouseButtonDown(0)) && currentTarget != null && Time.time >= lastWarpTime + warpCooldown)
         {
             StartCoroutine(WarpSequence());
         }
+    }
+
+    private bool IsPlayerWallRunning()
+    {
+        if (movementScript == null) return false;
+        
+        try 
+        {
+            // Tenta obter a propriedade IsWallRunning do script de movimento via Reflection
+            // para manter a consistência com o resto do código que usa Reflection.
+            PropertyInfo wallRunProp = movementScript.GetType().GetProperty("IsWallRunning");
+            if (wallRunProp != null)
+            {
+                return (bool)wallRunProp.GetValue(movementScript);
+            }
+        }
+        catch 
+        {
+            // Caso falhe, assume que não está em wallrun
+        }
+        return false;
     }
 
     private IEnumerator WarpSequence()

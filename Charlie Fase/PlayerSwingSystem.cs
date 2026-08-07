@@ -20,13 +20,17 @@ public class PlayerSwingSystem : MonoBehaviour
     [SerializeField] private float maxRopeLength = 35f; // Comprimento máximo da corda
     [SerializeField] private float ropeAdjustSpeed = 15f; // Velocidade para encurtar/alongar a corda
     
-    [Header("Física do Pêndulo")]
-    [SerializeField] private float gravityMultiplier = 2.0f; // Gravidade forte para dar peso ao personagem
-    [SerializeField] private float airResistance = 0.1f; // Resistência do ar natural
-    [SerializeField] private float swingPushForce = 20f; // Força aplicada pelo jogador para ganhar momento
-    [SerializeField] private float lateralControlForce = 10f; // Controle lateral sutil
-    [SerializeField] private float maxSwingSpeed = 30f;
-    [SerializeField] private float ropeTensionStrength = 180f; // Força da tensão da corda
+    [Header("Física do Pêndulo (Spider-Man Style)")]
+    [SerializeField] private float gravityMultiplier = 3.5f; // Gravidade mais forte para descidas rápidas
+    [SerializeField] private float airResistance = 0.05f; // Menos resistência para manter momentum
+    [SerializeField] private float swingPushForce = 25f; // Força de aceleração manual
+    [SerializeField] private float bottomArcBoost = 15f; // Bônus de velocidade ao passar pelo fundo do arco
+    [SerializeField] private float lateralControlForce = 15f; // Controle lateral mais responsivo
+    [SerializeField] private float maxSwingSpeed = 45f; // Velocidade máxima aumentada
+    [SerializeField] private float ropeTensionStrength = 250f; // Tensão mais firme
+    [SerializeField] private float elasticity = 0.1f; // Efeito elástico na corda
+
+
     
     [Header("Escalada na Corda")]
     [SerializeField] private float climbSpeed = 5f; // Velocidade de subir/descer na corda
@@ -78,6 +82,9 @@ public class PlayerSwingSystem : MonoBehaviour
         if (cameraTransform == null) cameraTransform = Camera.main.transform;
         if (ropeRenderer == null) ropeRenderer = GetComponent<LineRenderer>();
         if (handTransform == null) handTransform = transform;
+        
+
+
         // Auto-detecta o Animator se não for atribuído
         if (swingAnimator == null) swingAnimator = GetComponentInChildren<Animator>();
 
@@ -133,6 +140,9 @@ public class PlayerSwingSystem : MonoBehaviour
 
         // 1. Controle de Velocidade e Escalada (Lógica Anterior)
         float currentSwingSpeed = swingVelocity.magnitude;
+        
+        // Atualiza a velocidade no script de movimento para a câmera ler
+        if (playerMovement != null) playerMovement.currentSpeed = currentSwingSpeed;
         float normalizedSwingSpeed = Mathf.Clamp01(currentSwingSpeed / swingSpeedMaxForAnimation);
 
         if (Mathf.Abs(normalizedSwingSpeed - cachedSwingSpeed) > SWING_SPEED_CHANGE_THRESHOLD)
@@ -236,6 +246,9 @@ public class PlayerSwingSystem : MonoBehaviour
             
             _isSwingingInternal = true;
             playerMovement.isSwinging = true;
+
+            // Cancela o air dash se o jogador iniciar um swing durante o dash
+            playerMovement.CancelAirDash();
             // A animação de queda deve ser gerenciada pelo PlayerMovement_FrontiersStyle. O SwingSystem apenas garante que não estamos caindo enquanto balançamos.
             if (swingAnimator != null)
             {
@@ -277,40 +290,50 @@ public class PlayerSwingSystem : MonoBehaviour
             isClimbing = false;
         }
 
-        // 2. Aplicação de Gravidade Própria
-        swingVelocity += Vector3.down * (playerMovement.gravity * gravityMultiplier) * Time.deltaTime;
+        // 2. Aplicação de Gravidade Dinâmica (Ganha mais peso na descida)
+        float currentGravity = playerMovement.gravity * gravityMultiplier;
+        if (swingVelocity.y < 0) currentGravity *= 1.2f; 
+        swingVelocity += Vector3.down * currentGravity * Time.deltaTime;
 
-        // 3. Input de Balanço (Ganho de Momento)
-        if (holdingBoost || (!isClimbing && Mathf.Abs(v) > 0.1f))
+        // 3. Input de Balanço e Bônus de Arco
+        Vector3 camF = Vector3.ProjectOnPlane(cameraTransform.forward, Vector3.up).normalized;
+        Vector3 camR = Vector3.ProjectOnPlane(cameraTransform.right, Vector3.up).normalized;
+        Vector3 inputDir = (camF * v + camR * h).normalized;
+
+        if (inputDir.magnitude > 0.1f)
         {
-            Vector3 camF = Vector3.ProjectOnPlane(cameraTransform.forward, Vector3.up).normalized;
-            Vector3 camR = Vector3.ProjectOnPlane(cameraTransform.right, Vector3.up).normalized;
-            Vector3 inputDir = (camF * v + camR * h).normalized;
-
-            if (inputDir.magnitude > 0.1f)
+            Vector3 tangentDir = Vector3.ProjectOnPlane(inputDir, dirToAnchor).normalized;
+            float alignment = Vector3.Dot(swingVelocity.normalized, tangentDir);
+            float accel = (alignment > 0 || swingVelocity.magnitude < 2f) ? swingPushForce : swingPushForce * 0.5f;
+            
+            // Bônus no fundo do arco (quando dirToAnchor está quase vertical)
+            float verticality = Vector3.Dot(dirToAnchor, Vector3.up);
+            if (verticality > 0.8f && alignment > 0.5f)
             {
-                Vector3 tangentDir = Vector3.ProjectOnPlane(inputDir, dirToAnchor).normalized;
-                float alignment = Vector3.Dot(swingVelocity.normalized, tangentDir);
-                float accel = (alignment > 0 || swingVelocity.magnitude < 2f) ? swingPushForce : swingPushForce * 0.5f;
-                
-                swingVelocity += tangentDir * accel * Time.deltaTime;
-                
-                // Controle lateral
-                Vector3 lateralDir = Vector3.Cross(dirToAnchor, Vector3.up).normalized;
-                swingVelocity += lateralDir * (h * lateralControlForce * Time.deltaTime);
+                accel += bottomArcBoost;
             }
+
+            swingVelocity += tangentDir * accel * Time.deltaTime;
+            
+            // Controle lateral mais agressivo
+            Vector3 lateralDir = Vector3.Cross(dirToAnchor, Vector3.up).normalized;
+            swingVelocity += lateralDir * (h * lateralControlForce * Time.deltaTime);
         }
 
-        // 4. Restrição Rígida de Pêndulo (Impede a corda de esticar)
+        // 4. Tensão da Corda com Elasticidade
         if (currentDistance > currentRopeLength)
         {
-            // Força de tensão imediata
             float overshoot = currentDistance - currentRopeLength;
-            swingVelocity += dirToAnchor * (overshoot * ropeTensionStrength) * Time.deltaTime;
+            
+            // Aplica a tensão para manter o jogador no raio
+            Vector3 tensionForce = dirToAnchor * (overshoot * ropeTensionStrength);
+            swingVelocity += tensionForce * Time.deltaTime;
 
-            // Remove componente de velocidade que foge do centro
-            float velDot = Vector3.Dot(swingVelocity, dirToAnchor);
-            if (velDot < 0) swingVelocity -= dirToAnchor * velDot;
+            // Conservação de Momentum Angular: Projeta a velocidade na tangente da esfera
+            Vector3 tangentVelocity = Vector3.ProjectOnPlane(swingVelocity, dirToAnchor);
+            
+            // Adiciona um pouco de "puxada" elástica para evitar jitter
+            swingVelocity = Vector3.Lerp(swingVelocity, tangentVelocity, 1f - elasticity);
         }
 
         // 5. Amortecimento e Limites
@@ -325,11 +348,9 @@ public class PlayerSwingSystem : MonoBehaviour
     private void ExitSwing(bool isJump)
     {
         _isSwingingInternal = false;
-            playerMovement.isSwinging = false;
-            // A lógica de queda deve ser gerenciada pelo PlayerMovement_FrontiersStyle. O SwingSystem não deve forçar IsFalling aqui.
-            // No entanto, precisamos garantir que o Animator possa transicionar para a queda se o jogador estiver no ar.
-            // Isso será tratado pelo PlayerMovement_FrontiersStyle, que deve definir IsFalling com base em isGrounded.
-            if (swingAnimator != null) swingAnimator.SetBool("IsSwinging", false); // Desativa o estado de balanço ao sair
+        playerMovement.isSwinging = false;
+        
+        if (swingAnimator != null) swingAnimator.SetBool("IsSwinging", false);
         
         // --- RESET DE HABILIDADES AO SAIR ---
         playerMovement.doubleJumpCharges = playerMovement.maxDoubleJumpCharges;
@@ -337,16 +358,33 @@ public class PlayerSwingSystem : MonoBehaviour
         
         if (isJump)
         {
-            Vector3 jumpVel = swingVelocity;
-            Vector3 camForwardFlat = Vector3.ProjectOnPlane(cameraTransform.forward, Vector3.up).normalized;
-            jumpVel += camForwardFlat * 4f; // Pequeno bônus frontal
-            jumpVel.y = Mathf.Max(jumpVel.y + 3f, playerMovement.jumpForce); 
+            // Bônus de Lançamento (Spider-Man Style)
+            // Se soltar subindo e rápido, ganha muito mais momentum
+            float upwardMomentum = Mathf.Clamp01(Vector3.Dot(swingVelocity.normalized, Vector3.up));
+            float speedFactor = swingVelocity.magnitude / maxSwingSpeed;
             
-            playerMovement.moveDirection = jumpVel;
+            Vector3 launchBoost = swingVelocity;
+            Vector3 camForwardFlat = Vector3.ProjectOnPlane(cameraTransform.forward, Vector3.up).normalized;
+            
+            // Adiciona força frontal baseada na velocidade atual
+            launchBoost += camForwardFlat * (10f * speedFactor);
+            
+            // Se estiver no final do arco (subindo), dá um boost extra de altura
+            if (upwardMomentum > 0.2f)
+            {
+                launchBoost.y += 8f * speedFactor;
+            }
+            else
+            {
+                launchBoost.y = Mathf.Max(launchBoost.y + 4f, playerMovement.jumpForce);
+            }
+            
+            playerMovement.moveDirection = launchBoost;
             playerMovement.isJumping = true;
         }
         else
         {
+            // Soltura simples: mantém a velocidade atual
             playerMovement.moveDirection = swingVelocity;
         }
 

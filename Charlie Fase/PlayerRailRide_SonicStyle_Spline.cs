@@ -24,6 +24,7 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
     [SerializeField] private bool autoJumpAtEnd = true; // Pula automaticamente ao chegar no fim do rail
     [SerializeField] private float autoJumpForce = 8f; // Forca do pulo automatico ao fim do rail
     [SerializeField] private float earlyJumpDistance = 2f; // Distancia antes do fim para pular (em metros)
+    [SerializeField] private float stompCooldownOnRailExit = 0.5f; // Cooldown do stomp ao sair do rail pulando
     
     [Header("Configuracoes de Rotacao")]
     [SerializeField] private float rotationLerpSpeed = 10f; // Velocidade de rotacao proporcional ao percurso
@@ -641,6 +642,15 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
             return;
         }
 
+        // ✅ CORREÇÃO: Cancela Stomp, Ground Slide e limpa força vertical ANTES de entrar no rail
+        // Isso evita que o jogador continue em estados de solo ou com força descendente alta
+        if (movement != null)
+        {
+            movement.CancelStomp();
+            movement.CancelGroundSlideImmediate();
+            movement.ResetVerticalVelocity();
+        }
+
         // Adiciona pontos de estilo ao iniciar o grind
         styleRankSystem?.OnGrindRailStart();
 
@@ -691,6 +701,9 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
 
             // Desabilita a gravidade acumulada ao entrar no rail
             movement.ResetVerticalVelocity();
+            
+            // ✅ CORREÇÃO: Bloqueia o stomp imediatamente ao entrar no rail
+            movement.SetStompCooldown(stompCooldownOnRailExit);
         }
         else
         {
@@ -808,7 +821,16 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         StopBoostParticles();
         
         // Aplica pulo antecipado
-        Vector3 jumpVelocity = Vector3.up * autoJumpForce;
+        // ✅ MELHORIA: Usa transform.up para garantir que o pulo seja sempre para "fora" do rail
+        Vector3 jumpVelocity = transform.up * autoJumpForce;
+
+        // Aplica cooldown no stomp ao sair do rail
+        if (movement != null)
+        {
+            movement.SetStompCooldown(stompCooldownOnRailExit);
+            // Reseta velocidade vertical para garantir que o pulo seja limpo
+            movement.ResetVerticalVelocity();
+        }
         Vector3 forwardVelocity = transform.forward * (currentSpeed * exitSpeedMultiplier);
         
         if (movement != null)
@@ -865,6 +887,13 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         StopBoostParticles();
         StopSwitchGrindParticles();
 
+        // ✅ CORREÇÃO: Reseta estado de movimento ao sair forçado (ex: pulo manual)
+        if (movement != null)
+        {
+            movement.ResetVerticalVelocity();
+            movement.SetStompCooldown(stompCooldownOnRailExit);
+        }
+
         currentRail = null;
         grindTime = 0f;
         hasTriggeredEarlyJump = false;
@@ -911,6 +940,13 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         
         if (jumpOff)
         {
+            // ✅ CORREÇÃO: Reseta velocidade vertical e bloqueia stomp antes de aplicar o pulo
+            if (movement != null)
+            {
+                movement.ResetVerticalVelocity();
+                movement.SetStompCooldown(stompCooldownOnRailExit);
+            }
+
             Vector3 jumpVelocity = Vector3.up * jumpForce;
             Vector3 forwardVelocity = transform.forward * (currentSpeed * exitSpeedMultiplier);
             
@@ -986,7 +1022,16 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         // Pulo automatico ao fim do rail (se habilitado)
         if (autoJumpAtEnd)
         {
-            Vector3 jumpVelocity = Vector3.up * autoJumpForce;
+            // ✅ MELHORIA: Usa transform.up para garantir que o pulo seja sempre para "fora" do rail
+            Vector3 jumpVelocity = transform.up * autoJumpForce;
+
+            // Aplica cooldown no stomp ao sair do rail
+            if (movement != null)
+            {
+                movement.SetStompCooldown(stompCooldownOnRailExit);
+                // Reseta velocidade vertical para garantir que o pulo seja limpo
+                movement.ResetVerticalVelocity();
+            }
             Vector3 forwardVelocity = transform.forward * (currentSpeed * exitSpeedMultiplier);
             
             if (movement != null)

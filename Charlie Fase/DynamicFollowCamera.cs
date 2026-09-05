@@ -86,6 +86,17 @@ public class DynamicFollowCamera : MonoBehaviour
     [Header("Configurações Durante Warp")]
     public float warpFOV = 85f;
 
+    [Header("Configurações Durante Diálogo com NPC")]
+    public float dialogueHeight = 1.6f;
+    public float dialogueDistance = 3.5f;
+    public float dialoguePitch = 12f;
+    public float dialogueSideOffset = 0f;
+    public float dialogueFOV = 50f;
+    public float dialogueTransitionSpeed = 3.0f;
+    private float currentDialogueSideOffset = 0f;
+    private bool isTransitioningToDialogue = false;
+    private bool wasInDialogueLastFrame = false;
+
     [Header("Configurações Durante Sentado (Bench)")]
     public float sitDistance = 4.0f;
     public float sitHeight = 1.2f;
@@ -122,6 +133,13 @@ public class DynamicFollowCamera : MonoBehaviour
     [Tooltip("Distância ADICIONAL baseada na velocidade horizontal.")]
     public float swingSpeedDistanceMultiplier = 1.5f;
     public float swingTransitionSpeed = 5f;
+    [Header("Spider-Man Swing Tilt Settings")]
+    [Tooltip("Inclinação máxima da câmera durante o balanço lateral.")]
+    public float swingTiltAmount = 15f;
+    [Tooltip("Velocidade de inclinação da câmera.")]
+    public float swingTiltSpeed = 5f;
+    [Tooltip("Sensibilidade do movimento lateral para o tilt.")]
+    public float swingTiltSensitivity = 2f;
 
     [Header("Configurações de Spin Dash (Cinematográfico)")]
     [Tooltip("Duração do congelamento total (o impacto inicial).")]
@@ -149,7 +167,65 @@ public class DynamicFollowCamera : MonoBehaviour
     [SerializeField] private float wallDashShakeFrequency = 25f;
     [SerializeField] private bool enableWallDashShake = true;
 
+    [Header("Camera Shake ao Receber Dano")]
+    [SerializeField] private bool enableDamageShake = true;
+    [SerializeField, Min(0f)] private float damageShakeAmount = 0.18f;
+    [SerializeField, Min(0f)] private float damageShakeDuration = 0.22f;
+    [SerializeField, Min(0f)] private float damageShakeFrequency = 28f;
+    [Header("Impacto de Dano no Chão")]
+    [SerializeField, Min(0f)] private float damageRecoilDistance = 0.12f;
+    [Tooltip("Pitch do impacto no chão. Positivo inclina para baixo; negativo inclina para cima.")]
+    [SerializeField] private float damagePitchAmount = -4f;
+    [Tooltip("Velocidade de transição do pitch do Hit no chão.")]
+    [SerializeField, Min(0.01f)] private float damagePitchTransitionSpeed = 8f;
+    [Tooltip("Variação vertical no chão. Positivo sobe; negativo desce.")]
+    [SerializeField] private float damageHeightOffset = -0.12f;
+    [SerializeField, Min(0.001f)] private float damageHeightTransitionIn = 0.08f;
+    [SerializeField, Min(0f)] private float damageHeightHoldDuration = 0.04f;
+    [SerializeField, Min(0.001f)] private float damageHeightTransitionOut = 0.16f;
+    [SerializeField, Min(0f)] private float damageImpactDuration = 0.22f;
+
+    [Header("Alinhamento da Câmera após Hit")]
+    [Tooltip("Alinha suavemente a câmera atrás do jogador sempre que ele recebe dano.")]
+    [SerializeField] private bool alignBehindOnDamage = true;
+    [Tooltip("Tempo durante o qual a câmera acompanha o alinhamento após o hit.")]
+    [SerializeField, Min(0f)] private float damageAlignmentDuration = 0.45f;
+    [Tooltip("Velocidade do alinhamento horizontal atrás do jogador.")]
+    [SerializeField, Min(0.01f)] private float damageAlignmentSpeed = 8f;
+
+    [Header("Impacto de AirHit")]
+    [SerializeField, Min(0f)] private float airDamageRecoilDistance = 0.16f;
+    [Tooltip("Pitch do AirHit. Positivo inclina para baixo; negativo inclina para cima.")]
+    [SerializeField] private float airDamagePitchAmount = 5f;
+    [Tooltip("Velocidade de transição do pitch do AirHit.")]
+    [SerializeField, Min(0.01f)] private float airDamagePitchTransitionSpeed = 10f;
+    [Tooltip("Variação vertical do AirHit. Positivo sobe; negativo desce.")]
+    [SerializeField] private float airDamageHeightOffset = 0.08f;
+    [SerializeField, Min(0.001f)] private float airDamageHeightTransitionIn = 0.05f;
+    [SerializeField, Min(0f)] private float airDamageHeightHoldDuration = 0.08f;
+    [SerializeField, Min(0.001f)] private float airDamageHeightTransitionOut = 0.24f;
+    [SerializeField, Min(0f)] private float airDamageImpactDuration = 0.30f;
+
+        [Header("Câmera Cinematográfica de Morte")]
+    [Tooltip("Altura final da câmera acima do jogador durante a morte.")]
+    [SerializeField, Min(0f)] private float deathCameraHeight = 8f;
+    [Tooltip("Distância final da câmera atrás do jogador durante a morte.")]
+    [SerializeField, Min(0f)] private float deathCameraDistance = 14f;
+    [Tooltip("Deslocamento lateral opcional da câmera durante a morte.")]
+    [SerializeField] private float deathCameraSideOffset = 2f;
+    [Tooltip("Velocidade de aproximação da posição cinematográfica.")]
+    [SerializeField, Min(0.01f)] private float deathCameraPositionSpeed = 2.2f;
+    [Tooltip("Velocidade de rotação para olhar para o jogador.")]
+    [SerializeField, Min(0.01f)] private float deathCameraRotationSpeed = 3.5f;
+    [Tooltip("Altura do ponto que a câmera observa no jogador.")]
+    [SerializeField, Min(0f)] private float deathCameraLookAtHeight = 1.1f;
+    [Tooltip("FOV usado durante a câmera de morte.")]
+    [SerializeField, Min(1f)] private float deathCameraFOV = 58f;
+    [Tooltip("Usa tempo não escalado para continuar a transição mesmo se o jogo estiver pausado.")]
+    [SerializeField] private bool deathCameraUsesUnscaledTime = true;
+
     [Header("Configurações Durante Slope Slide")]
+
     public float slideDistance = 12.0f;
     public float slideHeight = 6.0f;
     public float slideSideOffset = 2.0f;
@@ -210,6 +286,19 @@ public class DynamicFollowCamera : MonoBehaviour
     private float currentWallRunDistanceMultiplier = 1.0f;
     private bool wasTransitioning = false;
     
+    [Header("QTE Settings")]
+    private bool isQTELocked = false;
+    private bool isQTECentered = false;
+    public float qteTransitionSpeed = 5f;
+    
+    [Header("QTE Camera Override Values")]
+    public float qtePitch = 15f;        // Ângulo vertical durante o QTE
+    public float qteFOV = 70f;          // FOV durante o QTE
+    public float qteHeight = 2.0f;      // Altura da câmera durante o QTE (relative to player)
+    public float qteDistance = 5.0f;    // Distância da câmera durante o QTE (relative to player)
+    
+    private float qteCurrentFOV = -1f;  // FOV atual do QTE para Lerp suave
+    
     private float currentGlideHeightFactor = 0f;
     private float currentGlideDistanceFactor = 0f;
     
@@ -228,6 +317,9 @@ public class DynamicFollowCamera : MonoBehaviour
     private float shakeAmount = 0f;
     private float shakeFrequency = 0f;
     private Vector3 shakeOffset = Vector3.zero;
+    private float damageImpactTimer = float.PositiveInfinity;
+    private float damageHeightTimer = float.PositiveInfinity;
+    private float damagePitchTimer = float.PositiveInfinity;
 
     private PlayerMovement_FrontiersStyle playerMovement;
     private PlayerRailRide_SonicStyle_Spline railRideSpline;
@@ -237,7 +329,12 @@ public class DynamicFollowCamera : MonoBehaviour
     private CameraRailManager cameraRailManager;
     private HorizontalBarHandler horizontalBarHandler; 
 
-    private bool wasOnBar = false;
+        private bool wasOnBar = false;
+    private bool isDeathCameraActive = false;
+    private Vector3 deathCameraVelocity = Vector3.zero;
+    private float deathCameraOriginalFOV;
+    private bool deathCameraOriginalFOVCaptured = false;
+
     private bool barAutoCenterActive = false;
     private float barEntrySideOffset = 0f;
 
@@ -254,6 +351,18 @@ public class DynamicFollowCamera : MonoBehaviour
     public float CurrentChromaticAberration => currentChromaticAberration;
     public float CurrentVignette => currentVignette;
     public float CurrentRadialBlur => currentRadialBlur;
+
+    /// <summary>
+    /// Sincroniza os ângulos internos com a rotação atual do Transform.
+    /// Deve ser chamado depois de uma câmera cinematográfica assumir a câmera
+    /// principal, evitando que o controle retome com a orientação antiga.
+    /// </summary>
+    public void SyncRotationToCurrentTransform()
+    {
+        currentX = transform.eulerAngles.y;
+        currentY = transform.eulerAngles.x;
+        wasTransitioning = false;
+    }
 
     void Start()
     {
@@ -368,6 +477,18 @@ public class DynamicFollowCamera : MonoBehaviour
         bool isGliding = IsPlayerGliding();
         bool isSwinging = IsPlayerSwinging();
         bool isSitting = IsPlayerSitting();
+        bool isInDialogue = NPCDialogueManager.Instance != null && NPCDialogueManager.Instance.IsDialogueActive;
+
+        // ✅ NOVO: Detecta o início/fim do diálogo (para transição da câmera)
+        if (isInDialogue && !wasInDialogueLastFrame)
+        {
+            isTransitioningToDialogue = true;
+        }
+        else if (!isInDialogue)
+        {
+            isTransitioningToDialogue = false;
+        }
+        wasInDialogueLastFrame = isInDialogue;
 
         // Detecta o início da transição ao sentar
         if (isSitting && !wasSittingLastFrame)
@@ -415,7 +536,7 @@ public class DynamicFollowCamera : MonoBehaviour
             currentSwingDistanceMultiplier = Mathf.Lerp(currentSwingDistanceMultiplier, 1f, Time.deltaTime * swingTransitionSpeed);
         }
         
-        if (!isInNarrow && !isOnBar && !isSitting)
+        if (!isInNarrow && !isOnBar && !isSitting && !isInDialogue)
         {
             if (isGrinding && allowGrindCameraRotation)
                 HandleRotationInput(grindRotationSpeed);
@@ -467,6 +588,7 @@ public class DynamicFollowCamera : MonoBehaviour
         if (targetFOVFromSwing > 0) targetFOV = targetFOVFromSwing;
         else if (isInNarrow) targetFOV = narrowFOV;
         else if (isOnBar) targetFOV = barFOV;
+        else if (isInDialogue) targetFOV = dialogueFOV;
         else if (isWarping) targetFOV = warpFOV;
         else if (isBoosting) targetFOV = boostFOV;
         else if (isGrinding) targetFOV = grindFOV;
@@ -474,6 +596,12 @@ public class DynamicFollowCamera : MonoBehaviour
         else if (isSliding) { targetFOV = slideFOV; targetDistortion = slideLensDistortion; }
         else if (isGroundSliding) { targetFOV = groundSlideFOV; targetDistortion = slideLensDistortion; }
         else if (isMovingFast) targetFOV = speedFOV;
+
+        // ✅ QTE OVERRIDE: Durante o QTE, força o FOV configurável em tempo real
+        if (isQTELocked)
+        {
+            targetFOV = qteFOV;
+        }
 
         float fovSpeed = isInNarrow ? narrowEnterSpeed : (isOnBar ? barTransitionSpeed : narrowExitSpeed);
         currentFOV = Mathf.Lerp(currentFOV, targetFOV, Time.deltaTime * fovSpeed);
@@ -507,6 +635,13 @@ public class DynamicFollowCamera : MonoBehaviour
 
         bool isBeingTransitioned = cameraRailManager != null && cameraRailManager.IsThisCameraTransitioning(transform);
 
+        // A câmera de morte tem prioridade sobre rail, QTE, diálogo e controles manuais.
+        if (isDeathCameraActive)
+        {
+            UpdateDeathCamera();
+            return;
+        }
+
         if (isBeingTransitioned)
         {
             currentX = transform.eulerAngles.y;
@@ -529,8 +664,16 @@ public class DynamicFollowCamera : MonoBehaviour
         bool isOnBar = IsPlayerOnBar();
         bool isSwinging = IsPlayerSwinging();
         bool isSitting = IsPlayerSitting();
+        bool isInDialogue = NPCDialogueManager.Instance != null && NPCDialogueManager.Instance.IsDialogueActive;
         
-        if (isInNarrow)
+        if (isQTELocked)
+        {
+            // ✅ QTE: A câmera se centraliza igual ao sistema de "Sitting"
+            // Força o alinhamento atrás do jogador com a velocidade de transição do QTE
+            currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.unscaledDeltaTime * qteTransitionSpeed * 3f);
+            currentY = Mathf.Lerp(currentY, qtePitch, Time.unscaledDeltaTime * qteTransitionSpeed * 2f);
+        }
+        else if (isInNarrow)
         {
             narrowExitTimer = narrowCollisionReturnDelay;
         }
@@ -539,10 +682,17 @@ public class DynamicFollowCamera : MonoBehaviour
             narrowExitTimer -= Time.deltaTime;
         }
 
-        float tSpeed = isSitting ? sitTransitionSpeed : (isInNarrow ? narrowEnterSpeed : (isOnBar ? barTransitionSpeed : (isSliding ? slideTransitionSpeed : (isGroundSliding ? groundSlideTransitionSpeed : narrowExitSpeed))));
+        float tSpeed = isSitting ? sitTransitionSpeed : (isInNarrow ? narrowEnterSpeed : (isOnBar ? barTransitionSpeed : (isInDialogue ? dialogueTransitionSpeed : (isSliding ? slideTransitionSpeed : (isGroundSliding ? groundSlideTransitionSpeed : narrowExitSpeed)))));
 
-        float targetBaseHeight = isSitting ? sitHeight : (isInNarrow ? narrowHeight : (isOnBar ? barHeight : (isSliding ? slideHeight : (isGroundSliding ? groundSlideHeight : (isGrinding ? grindHeight : (isSwinging ? swingBaseHeight : height))))));
-        float targetBaseDistance = isSitting ? sitDistance : (isInNarrow ? narrowDistance : (isOnBar ? barDistance : (isSliding ? slideDistance : (isGroundSliding ? groundSlideDistance : (isGrinding ? grindDistance : (isSwinging ? swingBaseDistance : currentDistance))))));
+        float targetBaseHeight = isSitting ? sitHeight : (isInNarrow ? narrowHeight : (isOnBar ? barHeight : (isInDialogue ? dialogueHeight : (isSliding ? slideHeight : (isGroundSliding ? groundSlideHeight : (isGrinding ? grindHeight : (isSwinging ? swingBaseHeight : height)))))));
+        float targetBaseDistance = isSitting ? sitDistance : (isInNarrow ? narrowDistance : (isOnBar ? barDistance : (isInDialogue ? dialogueDistance : (isSliding ? slideDistance : (isGroundSliding ? groundSlideDistance : (isGrinding ? grindDistance : (isSwinging ? swingBaseDistance : currentDistance)))))));
+        
+        // ✅ QTE OVERRIDE: Durante o QTE, força altura e distância configuráveis em tempo real
+        if (isQTELocked)
+        {
+            targetBaseHeight = qteHeight;
+            targetBaseDistance = qteDistance;
+        }
         
         // Aplica o offset de Glide
         targetBaseHeight += glideHeightOffset * currentGlideHeightFactor;
@@ -562,6 +712,7 @@ public class DynamicFollowCamera : MonoBehaviour
         
         float finalIdealDistance = smoothNarrowDistance * currentWallRunDistanceMultiplier;
         
+
         if (isInNarrow)
         {
             currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * tSpeed);
@@ -581,6 +732,14 @@ public class DynamicFollowCamera : MonoBehaviour
         {
             // Trava o ângulo vertical (Pitch) durante o ground slide
             currentY = Mathf.Lerp(currentY, groundSlidePitch, Time.deltaTime * groundSlideTransitionSpeed);
+        }
+        else if (isInDialogue)
+        {
+            // ✅ NOVO: Durante o diálogo, a câmera se alinha atrás do jogador
+            // com o pitch configurado e bloqueia o input manual (igual ao QTE)
+            float targetYaw = target.eulerAngles.y;
+            currentX = Mathf.LerpAngle(currentX, targetYaw, Time.deltaTime * dialogueTransitionSpeed * 2f);
+            currentY = Mathf.Lerp(currentY, dialoguePitch, Time.deltaTime * dialogueTransitionSpeed * 2f);
         }
         else if (isSitting)
         {
@@ -628,27 +787,44 @@ public class DynamicFollowCamera : MonoBehaviour
         }
         else
         {
+            // Se estiver em QTE, bloqueia o input manual do jogador
+            // NÃO usa return aqui! A câmera PRECISA continuar calculando a posição
+            bool qteBlockMouse = isQTELocked && !isQTECentered;
+
             bool hasMouseInput = Mathf.Abs(Input.GetAxis("Mouse X")) > 0.1f || Mathf.Abs(Input.GetAxis("Mouse Y")) > 0.1f;
             float rotSpeed = autoCenterSpeed;
 
-            if (!hasMouseInput && !isGrinding && !isSliding && !isWallRunning && !isOnBar && !isSitting)
-                currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * rotSpeed);
+            // Durante o QTE, ignora o mouse completamente (mesmo que o jogador mexa)
+            if (qteBlockMouse)
+            {
+                hasMouseInput = false;
+            }
+
+            if (!hasMouseInput && !isGrinding && !isSliding && !isWallRunning && !isOnBar && !isSitting && !IsPlayerInDialogue())
+            {
+                // Se estiver em QTE, usa unscaledDeltaTime para não ser afetado pelo slow motion
+                float smoothFactor = qteBlockMouse ? Time.unscaledDeltaTime : Time.deltaTime;
+                currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, smoothFactor * rotSpeed);
+            }
             else if (isWallRunning && wallRunAutoCenterStrength > 0f)
             {
                 float strength = hasMouseInput ? wallRunAutoCenterStrength * 0.3f : wallRunAutoCenterStrength;
-                currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed * strength);
-                currentY = Mathf.Lerp(currentY, 10f, Time.deltaTime * autoCenterSpeed * strength);
+                float smoothFactor = qteBlockMouse ? Time.unscaledDeltaTime : Time.deltaTime;
+                currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, smoothFactor * autoCenterSpeed * strength);
+                currentY = Mathf.Lerp(currentY, 10f, smoothFactor * autoCenterSpeed * strength);
             }
             else if (isGrinding && grindAutoCenterStrength > 0f)
             {
-                currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed * grindAutoCenterStrength);
-                currentY = Mathf.Lerp(currentY, 10f, Time.deltaTime * autoCenterSpeed * grindAutoCenterStrength);
+                float smoothFactor = qteBlockMouse ? Time.unscaledDeltaTime : Time.deltaTime;
+                currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, smoothFactor * autoCenterSpeed * grindAutoCenterStrength);
+                currentY = Mathf.Lerp(currentY, 10f, smoothFactor * autoCenterSpeed * grindAutoCenterStrength);
             }
-        else if (isSliding || isGroundSliding)
-        {
-             currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, Time.deltaTime * autoCenterSpeed * 0.5f);
-             currentY = Mathf.Lerp(currentY, 15f, Time.deltaTime * autoCenterSpeed * 0.5f);
-        }
+            else if (isSliding || isGroundSliding)
+            {
+                 float smoothFactor = qteBlockMouse ? Time.unscaledDeltaTime : Time.deltaTime;
+                 currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, smoothFactor * autoCenterSpeed * 0.5f);
+                 currentY = Mathf.Lerp(currentY, 15f, smoothFactor * autoCenterSpeed * 0.5f);
+            }
         }
 
         float targetWallYaw = isWallRunning ? (IsPlayerOnLeftWall() ? wallRunYawOffset : -wallRunYawOffset) : 0f;
@@ -658,12 +834,20 @@ public class DynamicFollowCamera : MonoBehaviour
         float targetNarrowSideOffset = isInNarrow ? narrowSideOffset : 0f;
         float targetBarSideOffset = isOnBar ? barEntrySideOffset : 0f;
         float targetSlideSideOffset = isSliding ? slideSideOffset : (isGroundSliding ? groundSlideSideOffset : 0f);
+        float targetDialogueSideOffset = isInDialogue ? dialogueSideOffset : 0f;
+        currentDialogueSideOffset = Mathf.Lerp(currentDialogueSideOffset, targetDialogueSideOffset, Time.deltaTime * dialogueTransitionSpeed);
         
         float targetTilt = 0f;
         if (isWallRunning) targetTilt = IsPlayerOnLeftWall() ? wallRunTiltAmount : -wallRunTiltAmount;
         else if (isGrinding) targetTilt = target.right.y * grindTiltAmount;
         else if (isSliding) targetTilt = slideTiltAngle;
         else if (isGroundSliding) targetTilt = groundSlideTiltAngle;
+        else if (isSwinging)
+        {
+            // ✅ Efeito Spider-Man: Inclina baseado no input lateral ou movimento relativo
+            float horizontalInput = Input.GetAxis("Horizontal");
+            targetTilt = -horizontalInput * swingTiltAmount;
+        }
         
         currentWallRunYaw = Mathf.Lerp(currentWallRunYaw, targetWallYaw, Time.deltaTime * (isWallRunning ? wallRunYawSpeed : 2.5f));
         currentWallRunSideOffset = Mathf.Lerp(currentWallRunSideOffset, targetWallSideOffset, Time.deltaTime * wallRunSideOffsetSpeed);
@@ -675,16 +859,31 @@ public class DynamicFollowCamera : MonoBehaviour
         currentBarSideOffset = Mathf.Lerp(currentBarSideOffset, targetBarSideOffset, Time.deltaTime * tSpeed);
         currentSlideSideOffset = Mathf.Lerp(currentSlideSideOffset, targetSlideSideOffset, Time.deltaTime * tSpeed);
         
-        currentTilt = Mathf.Lerp(currentTilt, targetTilt, Time.deltaTime * (isWallRunning ? wallRunTiltSpeed : (isSliding ? slideTiltSpeed : (isGroundSliding ? groundSlideTiltSpeed : 5f))));
+        currentTilt = Mathf.Lerp(currentTilt, targetTilt, Time.deltaTime * (isWallRunning ? wallRunTiltSpeed : (isSliding ? slideTiltSpeed : (isGroundSliding ? groundSlideTiltSpeed : (isSwinging ? swingTiltSpeed : 5f)))));
+
+        // Aplica o alinhamento por último para prevalecer sobre a rotação
+        // manual e sobre os demais modos de câmera durante o impacto.
+        if (damageAlignmentTimer > 0f)
+        {
+            damageAlignmentTimer -= Time.unscaledDeltaTime;
+            currentX = Mathf.LerpAngle(
+                currentX,
+                target.eulerAngles.y,
+                1f - Mathf.Exp(-damageAlignmentSpeed * Time.unscaledDeltaTime)
+            );
+        }
+        
+        UpdateDamageImpact();
 
         Quaternion finalRotation = Quaternion.Euler(currentY, currentX, 0);
         finalRotation *= Quaternion.Euler(0, currentWallRunYaw + currentGrindYaw, 0);
         finalRotation *= Quaternion.Euler(0, 0, currentTilt);
+        finalRotation *= Quaternion.Euler(damagePitchOffset, 0f, 0f);
 
         Vector3 rayOrigin = target.position + Vector3.up * collisionRaycastOffset;
         
         Vector3 sideDirection = finalRotation * Vector3.right;
-        Vector3 combinedSideOffset = sideDirection * (currentWallRunSideOffset + currentGrindSideOffset + currentNarrowSideOffset + currentBarSideOffset + currentSlideSideOffset);
+        Vector3 combinedSideOffset = sideDirection * (currentWallRunSideOffset + currentGrindSideOffset + currentNarrowSideOffset + currentBarSideOffset + currentSlideSideOffset + currentDialogueSideOffset);
         rayOrigin += combinedSideOffset;
 
         Vector3 direction = finalRotation * (Vector3.back * finalIdealDistance + Vector3.up * (smoothNarrowHeight - collisionRaycastOffset));
@@ -699,8 +898,13 @@ public class DynamicFollowCamera : MonoBehaviour
             targetCollisionDist = Mathf.Max(0.5f, hit.distance - collisionPadding);
 
         collisionDistance = Mathf.Lerp(collisionDistance, targetCollisionDist, Time.deltaTime * collisionResponseSpeed);
+        
+        // ✅ QTE: Verifica se a câmera já se centralizou atrás do jogador
+        CheckQTECentering();
 
         Vector3 desiredPosition = rayOrigin + normalizedDir * collisionDistance;
+        desiredPosition += finalRotation * (Vector3.back * damageRecoilOffset);
+        desiredPosition += Vector3.up * damageHeightOffsetCurrent;
         if (IsPlayerBoosting()) desiredPosition += Random.insideUnitSphere * boostShakeAmount;
         desiredPosition += shakeOffset;
 
@@ -723,9 +927,97 @@ public class DynamicFollowCamera : MonoBehaviour
         }
     }
 
+        /// <summary>
+    /// Entra na câmera cinematográfica de morte.
+    /// O controle manual é ignorado até ExitDeathCamera ser chamado.
+    /// </summary>
+    public void EnterDeathCamera()
+    {
+        if (target == null)
+            return;
+
+        isDeathCameraActive = true;
+        deathCameraVelocity = Vector3.zero;
+
+        if (cam != null && !deathCameraOriginalFOVCaptured)
+        {
+            deathCameraOriginalFOV = cam.fieldOfView;
+            deathCameraOriginalFOVCaptured = true;
+        }
+    }
+
+    /// <summary>
+    /// Sai da câmera de morte e devolve o controle ao sistema normal.
+    /// </summary>
+    public void ExitDeathCamera()
+    {
+        isDeathCameraActive = false;
+        deathCameraVelocity = Vector3.zero;
+
+        if (target != null)
+        {
+            currentX = transform.eulerAngles.y;
+            currentY = transform.eulerAngles.x;
+            currentDistance = Mathf.Clamp(Vector3.Distance(transform.position, target.position), minDistance, maxDistance);
+            collisionDistance = currentDistance;
+        }
+
+        deathCameraOriginalFOVCaptured = false;
+    }
+
+    public bool IsDeathCameraActive => isDeathCameraActive;
+
+    private void UpdateDeathCamera()
+    {
+        if (target == null)
+            return;
+
+        float dt = deathCameraUsesUnscaledTime ? Time.unscaledDeltaTime : Time.deltaTime;
+        dt = Mathf.Max(0.0001f, dt);
+
+        Vector3 targetForward = target.forward;
+        targetForward.y = 0f;
+        if (targetForward.sqrMagnitude < 0.001f)
+            targetForward = transform.forward;
+        targetForward.Normalize();
+
+        Vector3 targetRight = Vector3.Cross(Vector3.up, targetForward).normalized;
+        Vector3 desiredPosition = target.position
+            + Vector3.up * deathCameraHeight
+            - targetForward * deathCameraDistance
+            + targetRight * deathCameraSideOffset;
+
+        // SmoothDamp produz uma subida e afastamento contínuos, sem trocar de câmera abruptamente.
+        float smoothTime = 1f / Mathf.Max(0.01f, deathCameraPositionSpeed);
+        transform.position = Vector3.SmoothDamp(
+            transform.position,
+            desiredPosition,
+            ref deathCameraVelocity,
+            smoothTime,
+            Mathf.Infinity,
+            dt
+        );
+
+        Vector3 lookTarget = target.position + Vector3.up * deathCameraLookAtHeight;
+        Vector3 lookDirection = lookTarget - transform.position;
+        if (lookDirection.sqrMagnitude > 0.001f)
+        {
+            Quaternion desiredRotation = Quaternion.LookRotation(lookDirection.normalized, Vector3.up);
+            float rotationT = 1f - Mathf.Exp(-deathCameraRotationSpeed * dt);
+            transform.rotation = Quaternion.Slerp(transform.rotation, desiredRotation, rotationT);
+        }
+
+        if (cam != null)
+        {
+            float fovT = 1f - Mathf.Exp(-deathCameraRotationSpeed * dt);
+            cam.fieldOfView = Mathf.Lerp(cam.fieldOfView, deathCameraFOV, fovT);
+        }
+    }
+
     /// <summary>
     /// Ativa o efeito de congelamento da câmera para o Spin Dash.
     /// </summary>
+
     public void TriggerSpinDashFreeze()
     {
         spinDashTimer = spinDashFreezeDuration;
@@ -741,6 +1033,139 @@ public class DynamicFollowCamera : MonoBehaviour
         shakeDuration = wallDashShakeDuration;
         shakeAmount = wallDashShakeAmount;
         shakeFrequency = wallDashShakeFrequency;
+    }
+
+    /// <summary>
+    /// Dispara um shake específico para o recebimento de dano.
+    /// </summary>
+    private float damageRecoilOffset = 0f;
+    private float damagePitchOffset = 0f;
+    private float damagePitchVelocity = 0f;
+    private float damageHeightOffsetCurrent = 0f;
+    private float damageHeightTransitionInCurrent;
+    private float damageHeightHoldDurationCurrent;
+    private float damageHeightTransitionOutCurrent;
+    private float damageHeightOffsetTargetCurrent;
+    private float damageImpactDurationCurrent;
+    private float damageRecoilDistanceCurrent;
+    private float damagePitchAmountCurrent;
+    private float damagePitchTransitionSpeedCurrent;
+    private float damageAlignmentTimer;
+
+    public void TriggerDamageShake(bool isAirHit = false)
+    {
+        if (alignBehindOnDamage && target != null)
+            damageAlignmentTimer = damageAlignmentDuration;
+
+        if (isAirHit)
+        {
+            damageRecoilDistanceCurrent = airDamageRecoilDistance;
+            damagePitchAmountCurrent = airDamagePitchAmount;
+            damagePitchTransitionSpeedCurrent = airDamagePitchTransitionSpeed;
+            damageHeightOffsetTargetCurrent = airDamageHeightOffset;
+            damageHeightTransitionInCurrent = airDamageHeightTransitionIn;
+            damageHeightHoldDurationCurrent = airDamageHeightHoldDuration;
+            damageHeightTransitionOutCurrent = airDamageHeightTransitionOut;
+            damageImpactDurationCurrent = airDamageImpactDuration;
+        }
+        else
+        {
+            damageRecoilDistanceCurrent = damageRecoilDistance;
+            damagePitchAmountCurrent = damagePitchAmount;
+            damagePitchTransitionSpeedCurrent = damagePitchTransitionSpeed;
+            damageHeightOffsetTargetCurrent = damageHeightOffset;
+            damageHeightTransitionInCurrent = damageHeightTransitionIn;
+            damageHeightHoldDurationCurrent = damageHeightHoldDuration;
+            damageHeightTransitionOutCurrent = damageHeightTransitionOut;
+            damageImpactDurationCurrent = damageImpactDuration;
+        }
+
+        if (enableDamageShake && damageShakeDuration > 0f && damageShakeAmount > 0f)
+        {
+            shakeTimer = 0f;
+            shakeDuration = damageShakeDuration;
+            shakeAmount = damageShakeAmount;
+            shakeFrequency = damageShakeFrequency;
+        }
+
+        damageImpactTimer = 0f;
+        damageHeightTimer = 0f;
+        damagePitchTimer = 0f;
+        damagePitchVelocity = 0f;
+    }
+
+    private void UpdateDamageImpact()
+    {
+        if (damageImpactTimer < damageImpactDurationCurrent)
+        {
+            damageImpactTimer += Time.deltaTime;
+            float progress = Mathf.Clamp01(damageImpactTimer / Mathf.Max(0.0001f, damageImpactDurationCurrent));
+            float envelope = 1f - Mathf.SmoothStep(0f, 1f, progress);
+
+            damageRecoilOffset = damageRecoilDistanceCurrent * envelope;
+        }
+        else
+        {
+            damageRecoilOffset = 0f;
+        }
+
+        // O pitch usa uma única velocidade e mantém uma curva contínua
+        // quando troca do alvo do impacto para o alvo neutro.
+        float pitchSpeed = Mathf.Max(0.01f, damagePitchTransitionSpeedCurrent);
+        float targetPitch = damagePitchTimer < damageImpactDurationCurrent
+            ? damagePitchAmountCurrent
+            : 0f;
+        float pitchSmoothTime = 1f / pitchSpeed;
+
+        damagePitchOffset = Mathf.SmoothDamp(
+            damagePitchOffset,
+            targetPitch,
+            ref damagePitchVelocity,
+            pitchSmoothTime,
+            Mathf.Infinity,
+            Time.deltaTime
+        );
+
+        if (Mathf.Abs(damagePitchOffset) < 0.001f && targetPitch == 0f)
+        {
+            damagePitchOffset = 0f;
+            damagePitchVelocity = 0f;
+            damagePitchTimer = float.PositiveInfinity;
+        }
+        else
+        {
+            damagePitchTimer += Time.deltaTime;
+        }
+
+        // A altura possui sua própria curva para não saltar instantaneamente.
+        float heightIn = Mathf.Max(0.001f, damageHeightTransitionInCurrent);
+        float heightHold = Mathf.Max(0f, damageHeightHoldDurationCurrent);
+        float heightOut = Mathf.Max(0.001f, damageHeightTransitionOutCurrent);
+        float heightTotal = heightIn + heightHold + heightOut;
+
+        if (damageHeightTimer < heightTotal)
+        {
+            damageHeightTimer += Time.deltaTime;
+
+            if (damageHeightTimer <= heightIn)
+            {
+                float t = Mathf.Clamp01(damageHeightTimer / heightIn);
+                damageHeightOffsetCurrent = damageHeightOffsetTargetCurrent * Mathf.SmoothStep(0f, 1f, t);
+            }
+            else if (damageHeightTimer <= heightIn + heightHold)
+            {
+                damageHeightOffsetCurrent = damageHeightOffsetTargetCurrent;
+            }
+            else
+            {
+                float t = Mathf.Clamp01((damageHeightTimer - heightIn - heightHold) / heightOut);
+                damageHeightOffsetCurrent = damageHeightOffsetTargetCurrent * (1f - Mathf.SmoothStep(0f, 1f, t));
+            }
+        }
+        else
+        {
+            damageHeightOffsetCurrent = 0f;
+        }
     }
 
     private void UpdateShake()
@@ -772,6 +1197,12 @@ public class DynamicFollowCamera : MonoBehaviour
 
     private void HandleRotationInput(float speed)
     {
+        if (isQTELocked) return;
+
+        // ✅ NOVO: Durante o diálogo, bloqueia o input manual do mouse (igual ao QTE)
+        if (NPCDialogueManager.Instance != null && NPCDialogueManager.Instance.IsDialogueActive)
+            return;
+
         currentX += Input.GetAxis("Mouse X") * speed;
 
         // Se estiver no slide, ignora o input vertical do mouse para travar o ângulo
@@ -784,6 +1215,48 @@ public class DynamicFollowCamera : MonoBehaviour
         {
             currentY -= Input.GetAxis("Mouse Y") * speed;
             currentY = Mathf.Clamp(currentY, minYAngle, maxYAngle);
+        }
+    }
+
+    public void SetQTECameraLock(bool locked)
+    {
+        isQTELocked = locked;
+    }
+
+    // Função pública para bloquear input durante o QTE (chamada pelo QTEHandler)
+    public void EnterQTENow()
+    {
+        isQTELocked = true;
+        isQTECentered = false; // Reseta a flag para forçar a centralização
+        
+        // Força o FOV para o valor do QTE
+        if (cam != null)
+        {
+            cam.fieldOfView = qteFOV;
+        }
+    }
+
+    public void ExitQTENow()
+    {
+        isQTELocked = false;
+        isQTECentered = false;
+    }
+
+    /// <summary>
+    /// Verifica se a câmera já está centralizada atrás do jogador durante o QTE
+    /// Igual ao sistema de Sitting que verifica quando está perto o suficiente
+    /// </summary>
+    private void CheckQTECentering()
+    {
+        if (!isQTELocked) return;
+        
+        float targetYaw = target.eulerAngles.y;
+        float diffX = Mathf.Abs(Mathf.DeltaAngle(currentX, targetYaw));
+        float diffY = Mathf.Abs(currentY - qtePitch);
+        
+        if (diffX < 5f && diffY < 5f)
+        {
+            isQTECentered = true;
         }
     }
 
@@ -847,6 +1320,13 @@ public class DynamicFollowCamera : MonoBehaviour
     private bool IsPlayerSitting()
     {
         return playerMovement != null && playerMovement.IsSitting;
+    }
+
+    // ✅ NOVO: helper para detectar diálogo (o IsInDialogue do PlayerMovement é privado,
+    // então usamos o NPCDialogueManager diretamente — igual ao bloqueio no PlayerInteractor)
+    private bool IsPlayerInDialogue()
+    {
+        return NPCDialogueManager.Instance != null && NPCDialogueManager.Instance.IsDialogueActive;
     }
 
     private float GetPlayerSpeed()

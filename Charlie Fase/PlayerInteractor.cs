@@ -14,6 +14,11 @@ public class PlayerInteractor : MonoBehaviour
     {
         CheckForInteractable();
 
+        // Se o diálogo já está aberto, NÃO deixa o E registrar uma nova interação
+        // (isso evita reiniciar o diálogo — durante a conversa, o E só avança a fala no NPCDialogueManager)
+        if (NPCDialogueManager.Instance != null && NPCDialogueManager.Instance.IsDialogueActive)
+            return;
+
         if (currentInteractable != null && Input.GetKeyDown(interactKey))
         {
             currentInteractable.Interact(gameObject);

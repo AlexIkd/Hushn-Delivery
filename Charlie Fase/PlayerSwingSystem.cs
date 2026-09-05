@@ -10,6 +10,16 @@ public class PlayerSwingSystem : MonoBehaviour
     [SerializeField] private LineRenderer ropeRenderer; // Para desenhar a corda
     [SerializeField] private Transform handTransform; // Posição da mão para o início da corda
 
+    [Header("Input do Swing")]
+    [Tooltip("Tecla usada para iniciar e soltar o swing.")]
+    [SerializeField] private KeyCode swingKey = KeyCode.E;
+    [Tooltip("Se ativado, o botão esquerdo do mouse também poderá iniciar e soltar o swing.")]
+    [SerializeField] private bool enableMouseSwing = true;
+
+    // Registra qual dispositivo iniciou o swing para que a soltura seja consistente.
+    private bool swingStartedWithKey = false;
+    private bool swingStartedWithMouse = false;
+
     [Header("Configurações de Swing (Estilo TLOU2)")]
     [SerializeField] private float anchorDetectionRadius = 20f; // Raio de detecção para SwingAnchors
     [SerializeField] private float anchorDetectionAngle = 75f; // Ângulo de visão para detecção
@@ -57,6 +67,20 @@ public class PlayerSwingSystem : MonoBehaviour
     [SerializeField] private float maxRotationTilt = 45f; // Inclinação máxima do corpo em graus
     [SerializeField] private float rotationSmoothSpeed = 10f; // Velocidade do Lerp para a rotação
 
+    // ✅ NOVO: Triggers de animação de SAÍDA do Swing (configure os nomes no Animator)
+    // ESTILO MARVEL'S SPIDER-MAN: a saída depende do ÂNGULO em relação ao limite do balanço.
+    // Release no PIVÔ (muito próximo do swingAngleLimit) → animação ideal.
+    // Soltura no MEIO (longe do limite) → animação de cancelamento.
+    [Header("Animações de Saída do Swing")]
+    [Tooltip("Lista de Triggers para a saída no PIVÔ (muito próximo do limite do balanço). A cada soltura, um é escolhido ALEATORIAMENTE entre os disponíveis. Crie um parâmetro Trigger com cada nome no Animator (ex: SwingRelease1, SwingRelease2...).")]
+    [SerializeField] private List<string> pivotReleaseTriggerNames = new List<string> { "SwingRelease1", "SwingRelease2" };
+    [Tooltip("Lista de Triggers para a saída no MEIO do arco (longe do limite). A cada soltura, um é escolhido ALEATORIAMENTE entre os disponíveis. Crie um parâmetro Trigger com cada nome no Animator (ex: SwingCancel1, SwingCancel2...).")]
+    [SerializeField] private List<string> midSwingCancelTriggerNames = new List<string> { "SwingCancel1", "SwingCancel2" };
+    [Tooltip("Tolerância (em graus) para considerar o jogador 'no limite do balanço'. Se o ângulo do pêndulo estiver a menos deste valor do swingAngleLimit, a soltura conta como release no pivô.")]
+    [SerializeField] private float pivotReleaseAngleTolerance = 8f;
+    [Tooltip("Tempo mínimo em que o jogador precisa estar no swing (em segundos) antes de uma animação de saída poder tocar. 0 = desativado (saída sempre toca).")]
+    [SerializeField] private float minSwingTimeForExitAnimation = 0f;
+
     // Estado Interno
     private SwingAnchor currentTargetAnchor;
     private bool _isSwingingInternal = false;
@@ -75,6 +99,41 @@ public class PlayerSwingSystem : MonoBehaviour
     private float cachedSwingSpeed = -1f;
     private bool cachedIsClimbing = false;
     private const float SWING_SPEED_CHANGE_THRESHOLD = 0.01f;
+
+    // ✅ NOVO: Decisão de animação de saída
+    private string exitAnimationDecision = "";
+    private Coroutine exitDelayRoutine = null;
+    private float cachedSwingTime = 0f;
+
+    // ✅ NOVO: Libera o ClearSwingAnimationState no próximo frame
+    private System.Collections.IEnumerator ClearExitDecisionNextFrame()
+    {
+        yield return null; // aguarda 1 frame
+        exitAnimationDecision = "";
+    }
+
+    // ✅ NOVO: Escolhe um trigger ALEATÓRIO de uma lista (variação de animações de saída)
+    // NUNCA repete a mesma animação duas vezes seguidas (exceto se a lista tiver só 1 item)
+    private string PickRandomTrigger(List<string> triggerNames)
+    {
+        if (triggerNames == null || triggerNames.Count == 0)
+            return string.Empty;
+        if (triggerNames.Count == 1)
+            return triggerNames[0];
+
+        string chosen;
+        do
+        {
+            chosen = triggerNames[Random.Range(0, triggerNames.Count)];
+        }
+        while (chosen == lastUsedExitTrigger && triggerNames.Count > 1);
+
+        lastUsedExitTrigger = chosen;
+        return chosen;
+    }
+
+    // ✅ NOVO: registra a última animação de saída usada (para não repetir consecutivamente)
+    private string lastUsedExitTrigger = "";
 
     private void Awake()
     {
@@ -125,8 +184,13 @@ public class PlayerSwingSystem : MonoBehaviour
             currentTargetAnchor = FindNearestSwingAnchor();
             UpdateUI();
 
-            // Limpa os parâmetros do Animator quando não está balançando
-            ClearSwingAnimationState();
+            // ✅ CORRIGIDO: NÃO limpa o estado do Animator no mesmo frame da saída
+            // se houver uma animação de saída pendente. Senão, o IsSwinging=false
+            // e o SwingSpeed=0 cortam a transição de saída antes dela tocar.
+            if (string.IsNullOrEmpty(exitAnimationDecision))
+            {
+                ClearSwingAnimationState();
+            }
         }
     }
 
@@ -211,6 +275,7 @@ public class PlayerSwingSystem : MonoBehaviour
             // A lógica de queda deve ser gerenciada pelo PlayerMovement_FrontiersStyle após sair do swing.
         cachedSwingSpeed = -1f;
         cachedIsClimbing = false;
+        cachedSwingTime = 0f; // ✅ Reseta o cronômetro de tempo no swing
     }
 
     // ======================================================
@@ -219,50 +284,79 @@ public class PlayerSwingSystem : MonoBehaviour
 
     private void HandleInput()
     {
-        // O swing só pode começar se NÃO estiver tocando o chão (groundLayer)
+        // O swing só pode começar se NÃO estiver tocando o chão (groundLayer).
         bool canStart = !isTouchingGround;
 
-        if (Input.GetMouseButtonDown(0) && !_isSwingingInternal && canStart)
+        bool keyDown = Input.GetKeyDown(swingKey);
+        bool mouseDown = enableMouseSwing && Input.GetMouseButtonDown(0);
+
+        if (!_isSwingingInternal && canStart && (keyDown || mouseDown))
         {
+            // Tenta encontrar uma âncora antes de registrar o dispositivo de entrada.
             TryStartSwing();
+
+            if (_isSwingingInternal)
+            {
+                swingStartedWithKey = keyDown;
+                swingStartedWithMouse = mouseDown;
+            }
         }
-        else if ((Input.GetMouseButtonUp(0) || Input.GetButtonDown("Jump")) && _isSwingingInternal)
+        else if (_isSwingingInternal)
         {
-            ExitSwing(Input.GetButtonDown("Jump"));
+            bool keyUp = swingStartedWithKey && Input.GetKeyUp(swingKey);
+            bool mouseUp = swingStartedWithMouse && Input.GetMouseButtonUp(0);
+
+            if (keyUp || mouseUp)
+            {
+                // Soltar a tecla ou o botão que iniciou o swing libera o jogador.
+                ExitSwing();
+                swingStartedWithKey = false;
+                swingStartedWithMouse = false;
+            }
+            else if (Input.GetButtonDown("Jump"))
+            {
+                // Pular durante o swing cancela com o impulso de lançamento.
+                ExitSwing(true);
+                swingStartedWithKey = false;
+                swingStartedWithMouse = false;
+            }
         }
     }
 
     private void TryStartSwing()
     {
         currentTargetAnchor = FindNearestSwingAnchor();
-        if (currentTargetAnchor != null)
+        if (currentTargetAnchor == null)
         {
-            anchorPoint = currentTargetAnchor.GetAnchorPosition();
-            currentRopeLength = Vector3.Distance(handTransform.position, anchorPoint);
-            currentRopeLength = Mathf.Clamp(currentRopeLength, minRopeLength, maxRopeLength);
-            
-            // Transfere o momento inicial do jogador
-            swingVelocity = playerMovement.moveDirection;
-            
-            _isSwingingInternal = true;
-            playerMovement.isSwinging = true;
-
-            // Cancela o air dash se o jogador iniciar um swing durante o dash
-            playerMovement.CancelAirDash();
-            // A animação de queda deve ser gerenciada pelo PlayerMovement_FrontiersStyle. O SwingSystem apenas garante que não estamos caindo enquanto balançamos.
-            if (swingAnimator != null)
-            {
-                swingAnimator.SetBool("IsFalling", false); // Garante que não estamos caindo
-                swingAnimator.SetBool("IsSwinging", true); // Ativa o estado de balanço imediatamente
-                // Força a reprodução da animação de swing com transição suave (Crossfade)
-                swingAnimator.CrossFade(swingAnimationStateName, animationCrossfadeDuration);
-            }
-            isClimbing = false;
-            isLaunching = true;
-            launchTimer = 0f;
-            
-            if (ropeRenderer != null) ropeRenderer.enabled = true;
+            return;
         }
+
+        anchorPoint = currentTargetAnchor.GetAnchorPosition();
+        currentRopeLength = Vector3.Distance(handTransform.position, anchorPoint);
+        currentRopeLength = Mathf.Clamp(currentRopeLength, minRopeLength, maxRopeLength);
+        
+        // Transfere o momento inicial do jogador
+        swingVelocity = playerMovement.moveDirection;
+        
+        _isSwingingInternal = true;
+        playerMovement.isSwinging = true;
+
+        // Cancela o air dash se o jogador iniciar um swing durante o dash
+        playerMovement.CancelAirDash();
+        // A animação de queda deve ser gerenciada pelo PlayerMovement_FrontiersStyle. O SwingSystem apenas garante que não estamos caindo enquanto balançamos.
+        if (swingAnimator != null)
+        {
+            swingAnimator.SetBool("IsFalling", false); // Garante que não estamos caindo
+            swingAnimator.SetBool("IsSwinging", true); // Ativa o estado de balanço
+            // ✅ Entrada no swing: CrossFade para o estado de Swing (como antes)
+            // NOTA: o nome do estado do Animator pode diferir do campo abaixo; configure em tempo real.
+            swingAnimator.CrossFadeInFixedTime(swingAnimationStateName, animationCrossfadeDuration);
+        }
+        isClimbing = false;
+        isLaunching = true;
+        launchTimer = 0f;
+        
+        if (ropeRenderer != null) ropeRenderer.enabled = true;
     }
 
     private void ProcessAdvancedSwing()
@@ -345,18 +439,88 @@ public class PlayerSwingSystem : MonoBehaviour
         playerMovement.currentSpeed = swingVelocity.magnitude;
     }
 
-    private void ExitSwing(bool isJump)
+    /// <summary>
+    /// Interrompe o swing sem aplicar impulso de saída ou animação de lançamento.
+    /// Usado pelo sistema de vida durante a morte e o respawn.
+    /// </summary>
+    public void ForceStopSwing()
+    {
+        _isSwingingInternal = false;
+        isLaunching = false;
+        isClimbing = false;
+        launchTimer = 0f;
+        swingVelocity = Vector3.zero;
+        swingStartedWithKey = false;
+        swingStartedWithMouse = false;
+        exitAnimationDecision = string.Empty;
+
+        if (playerMovement != null)
+        {
+            playerMovement.isSwinging = false;
+            playerMovement.moveDirection = Vector3.zero;
+        }
+
+        if (ropeRenderer != null)
+            ropeRenderer.enabled = false;
+
+        if (swingAnimator != null)
+        {
+            swingAnimator.SetBool("IsSwinging", false);
+            swingAnimator.SetBool("IsSwingClimbing", false);
+            swingAnimator.SetFloat("SwingSpeed", 0f);
+        }
+    }
+
+    private void ExitSwing(bool isJumpInput = false)
     {
         _isSwingingInternal = false;
         playerMovement.isSwinging = false;
-        
-        if (swingAnimator != null) swingAnimator.SetBool("IsSwinging", false);
+
+        // ✅ ESTILO MARVEL'S SPIDER-MAN: decide a animação de saída pela extensão da corda
+        // e a aplica SEMPRE, imediatamente — o ClearSwingAnimationState fica protegido
+        // até a decisão ser executada, evitando que o Animator corte a transição.
+        if (swingAnimator != null)
+        {
+            // ✅ ESTILO MARVEL'S SPIDER-MAN: a animação de saída depende do ÂNGULO do pêndulo
+            // em relação ao LIMITE DE BALANÇO (swingAngleLimit) no momento da soltura.
+            // Ângulo muito próximo do swingAngleLimit → pulo de PIVÔ (SwingRelease)
+            // Fora do limite → pulo do MEIO (SwingCancel)
+            // A cada soltura, uma animação ALEATÓRIA é escolhida da lista correspondente.
+            float swingAngle = GetCurrentSwingAngle();
+            float angleProximityToLimit = swingAngleLimit - Mathf.Abs(swingAngle);
+
+            if (isJumpInput)
+            {
+                exitAnimationDecision = PickRandomTrigger(midSwingCancelTriggerNames);
+            }
+            else if (angleProximityToLimit <= pivotReleaseAngleTolerance)
+            {
+                // Muito PRÓXIMO do limite do balanço → pulo de PIVÔ (release ideal)
+                exitAnimationDecision = PickRandomTrigger(pivotReleaseTriggerNames);
+            }
+            else
+            {
+                // Longe do limite (meio do arco) → pulo do MEIO (cancelamento)
+                exitAnimationDecision = PickRandomTrigger(midSwingCancelTriggerNames);
+            }
+
+            // ✅ Aplica o trigger IMEDIATAMENTE (a proteção está no ClearSwingAnimationState,
+            // que não roda enquanto exitAnimationDecision estiver pendente)
+            swingAnimator.SetTrigger(exitAnimationDecision);
+
+            // Libera o estado de balanço APÓS aplicar o trigger
+            swingAnimator.SetBool("IsSwinging", false);
+
+            // Limpa a decisão após um frame (garante que o Clear fica bloqueado
+            // durante o frame da saída e a transição de saída começa sem cortes)
+            StartCoroutine(ClearExitDecisionNextFrame());
+        }
         
         // --- RESET DE HABILIDADES AO SAIR ---
         playerMovement.doubleJumpCharges = playerMovement.maxDoubleJumpCharges;
         playerMovement.airDashCharges = playerMovement.maxAirDashCharges;
         
-        if (isJump)
+        if (isJumpInput)
         {
             // Bônus de Lançamento (Spider-Man Style)
             // Se soltar subindo e rápido, ganha muito mais momentum
@@ -382,13 +546,31 @@ public class PlayerSwingSystem : MonoBehaviour
             playerMovement.moveDirection = launchBoost;
             playerMovement.isJumping = true;
         }
-        else
+        else if (!isJumpInput)
         {
-            // Soltura simples: mantém a velocidade atual
+            // Soltura simples (mouse): mantém a velocidade atual —
+            // no pivô ela é MÁXIMA (Spider-Man), por isso a soltura no pivô dá o impulso perfeito
             playerMovement.moveDirection = swingVelocity;
         }
+        // isJumpInput=true: o bloco anterior já aplicou o bônus de lançamento
 
         if (ropeRenderer != null) ropeRenderer.enabled = false;
+    }
+
+    /// <summary>
+    /// ✅ NOVO: Calcula o ângulo atual do pêndulo em graus (0 = fundo do arco/pivô).
+    /// Usa a mesma referência da animação (câmera como frente do plano de balanço)
+    /// para garantir que o ângulo da animação e o da decisão de saída sejam idênticos.
+    /// </summary>
+    private float GetCurrentSwingAngle()
+    {
+        if (cameraTransform == null) return 999f;
+
+        Vector3 playerToAnchor = anchorPoint - transform.position;
+        Vector3 playerDir = -playerToAnchor.normalized;
+        Vector3 swingPlaneForward = Vector3.ProjectOnPlane(cameraTransform.forward, Vector3.up).normalized;
+        float angle = Vector3.SignedAngle(Vector3.down, playerDir, Vector3.Cross(Vector3.down, swingPlaneForward));
+        return angle;
     }
 
     private void DrawRope()

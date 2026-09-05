@@ -47,6 +47,9 @@ public class PlayerSpinDash : MonoBehaviour
     [Tooltip("Sistema de Parkour do jogador")]
     [SerializeField] private ParkourSystem parkourSystem;
 
+    [Tooltip("Sistema de vida usado para bloquear o Spin Dash durante a morte")]
+    [SerializeField] private PlayerHealthSystem healthSystem;
+
     // ======================================================
     // TECLA DE ATIVAÇÃO
     // ======================================================
@@ -214,6 +217,9 @@ public class PlayerSpinDash : MonoBehaviour
         if (parkourSystem == null)
             parkourSystem = GetComponent<ParkourSystem>();
 
+        if (healthSystem == null)
+            healthSystem = GetComponent<PlayerHealthSystem>();
+
         StopAllParticleEffects();
     }
 
@@ -223,9 +229,63 @@ public class PlayerSpinDash : MonoBehaviour
 
     private void Update()
     {
+        // Enquanto o jogador estiver morto ou em Game Over, cancela qualquer
+        // carga/dash ativo e impede uma nova ativação do Spin Dash.
+        if (healthSystem != null &&
+            (healthSystem.IsDying || healthSystem.IsGameOver))
+        {
+            if (isCharging || isSpinning)
+                ForceCancelSpinDash();
+
+            return;
+        }
+
         if (cooldownTimer > 0)
         {
             cooldownTimer -= Time.deltaTime;
+            return;
+        }
+
+        // =============================================
+        // BLOQUEIO DURANTE A REAÇÃO DE DANO
+        // =============================================
+        if (playerMovement != null && playerMovement.IsDamageMovementLocked)
+        {
+            if (isCharging)
+            {
+                CancelCharge();
+                if (showDebugInfo)
+                    Debug.Log("🚫 Spin Dash: Cancelado — reação de dano ativa.");
+            }
+
+            if (isSpinning)
+            {
+                StopActiveSpinDash();
+                if (showDebugInfo)
+                    Debug.Log("🚫 Spin Dash: Parado — reação de dano ativa.");
+            }
+
+            return;
+        }
+
+        // =============================================
+        // ✅ NOVO: SE O JOGADOR ESTIVER EM DIÁLOGO COM UM NPC, CANCELA
+        // TUDO (charge e dash ativo) — igual aos outros bloqueios
+        // =============================================
+        if (IsInDialogue())
+        {
+            if (isCharging)
+            {
+                CancelCharge();
+                if (showDebugInfo)
+                    Debug.Log("🚫 Spin Dash: Cancelado — Jogador está em diálogo.");
+            }
+            if (isSpinning)
+            {
+                StopActiveSpinDash();
+                if (showDebugInfo)
+                    Debug.Log("🚫 Spin Dash: Parado — Jogador está em diálogo.");
+            }
             return;
         }
 
@@ -281,6 +341,10 @@ public class PlayerSpinDash : MonoBehaviour
             }
             return;
         }
+
+        // ✅ NOVO: Impede INICIAR o carregamento do Spin Dash durante o diálogo
+        if (IsInDialogue())
+            return;
 
         // =============================================
         // SE O JOGADOR ESTIVER NO PARKOUR, CANCELA
@@ -923,8 +987,39 @@ public class PlayerSpinDash : MonoBehaviour
 
     public void ForceCancelSpinDash()
     {
-        if (isCharging) CancelCharge();
-        else if (isSpinning) StopActiveSpinDash();
+        bool hadSpinDashState = isCharging || isSpinning || isQuickTapping || currentLevel != SpinDashLevel.None;
+
+        // Não usar else-if: limpa todos os estados mesmo se a carga estiver
+        // mudando para o dash no mesmo frame em que o dano foi recebido.
+        if (isCharging)
+            CancelCharge();
+
+        if (isSpinning)
+            StopActiveSpinDash();
+
+        isCharging = false;
+        isSpinning = false;
+        isQuickTapping = false;
+        quickTapActivatedAnimation = false;
+        chargeTimer = 0f;
+        dashTimer = 0f;
+        currentLevel = SpinDashLevel.None;
+        spinDashDirection = transform.forward;
+
+        DisableTrail();
+        StopAllParticleEffects();
+
+        if (hadSpinDashState && showDebugInfo)
+            Debug.Log("🚫 Spin Dash: cancelado imediatamente por dano.");
+    }
+
+    /// <summary>
+    /// ✅ NOVO: Verifica se o jogador está em diálogo com um NPC
+    /// (usa o NPCDialogueManager, igual aos bloqueios do skid e do air dash)
+    /// </summary>
+    private bool IsInDialogue()
+    {
+        return NPCDialogueManager.Instance != null && NPCDialogueManager.Instance.IsDialogueActive;
     }
 
     // ======================================================
@@ -948,6 +1043,9 @@ public class PlayerSpinDash : MonoBehaviour
         yPos += lineHeight;
 
         GUI.Label(new Rect(10, yPos, 350, 20), $"No Parkour: {IsInParkour()}");
+        yPos += lineHeight;
+
+        GUI.Label(new Rect(10, yPos, 350, 20), $"Em Diálogo: {IsInDialogue()}");
         yPos += lineHeight;
 
         if (isCharging)

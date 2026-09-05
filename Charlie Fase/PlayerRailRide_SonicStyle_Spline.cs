@@ -822,21 +822,8 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         
         // Aplica pulo antecipado
         // ✅ MELHORIA: Usa transform.up para garantir que o pulo seja sempre para "fora" do rail
-        Vector3 jumpVelocity = transform.up * autoJumpForce;
-
-        // Aplica cooldown no stomp ao sair do rail
-        if (movement != null)
-        {
-            movement.SetStompCooldown(stompCooldownOnRailExit);
-            // Reseta velocidade vertical para garantir que o pulo seja limpo
-            movement.ResetVerticalVelocity();
-        }
-        Vector3 forwardVelocity = transform.forward * (currentSpeed * exitSpeedMultiplier);
-        
-        if (movement != null)
-        {
-            movement.AddExternalVelocity(forwardVelocity + jumpVelocity);
-        }
+        // ✅ Ejeção unificada via PlayerMovement para consistência e impulso frontal
+        if (movement != null) movement.HandleRailExit(false);
         
         Debug.Log("Pulo antecipado ativado! (Distancia: " + earlyJumpDistance.ToString("F1") + "m antes do fim, Tempo: " + finalGrindTime.ToString("F1") + "s, Velocidade: " + currentSpeed.ToString("F1") + ")");
 
@@ -940,22 +927,7 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         
         if (jumpOff)
         {
-            // ✅ CORREÇÃO: Reseta velocidade vertical e bloqueia stomp antes de aplicar o pulo
-            if (movement != null)
-            {
-                movement.ResetVerticalVelocity();
-                movement.SetStompCooldown(stompCooldownOnRailExit);
-            }
-
-            Vector3 jumpVelocity = Vector3.up * jumpForce;
-            Vector3 forwardVelocity = transform.forward * (currentSpeed * exitSpeedMultiplier);
-            
-            if (movement != null)
-            {
-                movement.AddExternalVelocity(forwardVelocity + jumpVelocity);
-            }
-            
-            Debug.Log("Saiu do rail com pulo (Tempo: " + finalGrindTime.ToString("F1") + "s, Velocidade: " + currentSpeed.ToString("F1") + ")");
+            if (movement != null) movement.HandleRailExit(false);
         }
         else
         {
@@ -1023,21 +995,8 @@ public class PlayerRailRide_SonicStyle_Spline : MonoBehaviour
         if (autoJumpAtEnd)
         {
             // ✅ MELHORIA: Usa transform.up para garantir que o pulo seja sempre para "fora" do rail
-            Vector3 jumpVelocity = transform.up * autoJumpForce;
-
-            // Aplica cooldown no stomp ao sair do rail
-            if (movement != null)
-            {
-                movement.SetStompCooldown(stompCooldownOnRailExit);
-                // Reseta velocidade vertical para garantir que o pulo seja limpo
-                movement.ResetVerticalVelocity();
-            }
-            Vector3 forwardVelocity = transform.forward * (currentSpeed * exitSpeedMultiplier);
-            
-            if (movement != null)
-            {
-                movement.AddExternalVelocity(forwardVelocity + jumpVelocity);
-            }
+        // ✅ Ejeção unificada via PlayerMovement para consistência e impulso frontal
+        if (movement != null) movement.HandleRailExit(false);
             
             Debug.Log("Fim do rail - Pulo automatico! (Tempo: " + finalGrindTime.ToString("F1") + "s, Velocidade: " + currentSpeed.ToString("F1") + ")");
         }

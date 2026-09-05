@@ -39,6 +39,7 @@ public class QTEHandler : MonoBehaviour
     private float qteTimer;
     private float qteDuration;
     private System.Action<bool> onComplete;
+    private DynamicFollowCamera qteCamera;
 
     void Awake()
     {
@@ -88,6 +89,17 @@ public class QTEHandler : MonoBehaviour
         // Efeito de Slow Motion
         Time.timeScale = 0.3f;
         Time.fixedDeltaTime = 0.02f * Time.timeScale;
+
+        // ✅ MELHORADO: Trava a câmera, foca no jogador e ajusta o FOV
+        if (qteCamera == null) qteCamera = FindObjectOfType<DynamicFollowCamera>();
+        if (qteCamera != null)
+        {
+            qteCamera.EnterQTENow(); // Usa o novo método que força FOV e trava completa
+        }
+        else
+        {
+            Debug.LogWarning("QTE: DynamicFollowCamera não encontrada na cena!");
+        }
     }
 
     private void CreateIcon(int action)
@@ -220,6 +232,12 @@ public class QTEHandler : MonoBehaviour
         
         Time.timeScale = 1.0f;
         Time.fixedDeltaTime = 0.02f;
+
+        // ✅ MELHORADO: Libera a câmera e restaura FOV normal
+        if (qteCamera != null)
+        {
+            qteCamera.ExitQTENow();
+        }
 
         onComplete?.Invoke(success);
     }

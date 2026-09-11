@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 
 public class DynamicFollowCamera : MonoBehaviour
@@ -119,6 +120,23 @@ public class DynamicFollowCamera : MonoBehaviour
     public float glideDistanceOffset = 2.0f;
     [Tooltip("Velocidade de transição para os valores de Glide.")]
     public float glideTransitionSpeed = 3.0f;
+
+    [Header("Elevação ao passar pelo Air Dash Ring")]
+    [Tooltip("Offset temporário de altura aplicado quando o jogador atravessa um ring.")]
+    [SerializeField, Min(0f)] private float ringHeightBoost = 0.8f;
+    [Tooltip("Velocidade de subida e retorno da câmera após o ring.")]
+    [SerializeField, Min(0.01f)] private float ringHeightBoostSpeed = 8f;
+    [Tooltip("Tempo que a câmera permanece elevada após o ring.")]
+    [SerializeField, Min(0f)] private float ringHeightBoostDuration = 0.45f;
+
+    private float currentRingHeightOffset;
+    private float targetRingHeightOffset;
+    private Coroutine ringHeightBoostRoutine;
+    [Tooltip("Duração da centralização da visão após atravessar um ring.")]
+    [SerializeField, Min(0f)] private float ringCenterDuration = 0.5f;
+    [Tooltip("Velocidade de alinhamento da câmera atrás do jogador.")]
+    [SerializeField, Min(0.01f)] private float ringCenterSpeed = 8f;
+    private float ringCenterTimer;
 
     [Header("Configurações Durante Swing (Spider-Man Style)")]
     public float swingMinFOV = 60f;
@@ -362,6 +380,27 @@ public class DynamicFollowCamera : MonoBehaviour
         currentX = transform.eulerAngles.y;
         currentY = transform.eulerAngles.x;
         wasTransitioning = false;
+    }
+
+    public void TriggerRingHeightBoost()
+    {
+        if (ringHeightBoostRoutine != null)
+            StopCoroutine(ringHeightBoostRoutine);
+
+        targetRingHeightOffset = ringHeightBoost;
+        ringHeightBoostRoutine = StartCoroutine(ReleaseRingHeightBoost());
+    }
+
+    public void TriggerRingCameraCenter()
+    {
+        ringCenterTimer = Mathf.Max(0f, ringCenterDuration);
+    }
+
+    private IEnumerator ReleaseRingHeightBoost()
+    {
+        yield return new WaitForSecondsRealtime(Mathf.Max(0f, ringHeightBoostDuration));
+        targetRingHeightOffset = 0f;
+        ringHeightBoostRoutine = null;
     }
 
     void Start()
@@ -685,6 +724,12 @@ public class DynamicFollowCamera : MonoBehaviour
         float tSpeed = isSitting ? sitTransitionSpeed : (isInNarrow ? narrowEnterSpeed : (isOnBar ? barTransitionSpeed : (isInDialogue ? dialogueTransitionSpeed : (isSliding ? slideTransitionSpeed : (isGroundSliding ? groundSlideTransitionSpeed : narrowExitSpeed)))));
 
         float targetBaseHeight = isSitting ? sitHeight : (isInNarrow ? narrowHeight : (isOnBar ? barHeight : (isInDialogue ? dialogueHeight : (isSliding ? slideHeight : (isGroundSliding ? groundSlideHeight : (isGrinding ? grindHeight : (isSwinging ? swingBaseHeight : height)))))));
+        currentRingHeightOffset = Mathf.Lerp(
+            currentRingHeightOffset,
+            targetRingHeightOffset,
+            Time.deltaTime * ringHeightBoostSpeed
+        );
+        targetBaseHeight += currentRingHeightOffset;
         float targetBaseDistance = isSitting ? sitDistance : (isInNarrow ? narrowDistance : (isOnBar ? barDistance : (isInDialogue ? dialogueDistance : (isSliding ? slideDistance : (isGroundSliding ? groundSlideDistance : (isGrinding ? grindDistance : (isSwinging ? swingBaseDistance : currentDistance)))))));
         
         // ✅ QTE OVERRIDE: Durante o QTE, força altura e distância configuráveis em tempo real
@@ -860,6 +905,13 @@ public class DynamicFollowCamera : MonoBehaviour
         currentSlideSideOffset = Mathf.Lerp(currentSlideSideOffset, targetSlideSideOffset, Time.deltaTime * tSpeed);
         
         currentTilt = Mathf.Lerp(currentTilt, targetTilt, Time.deltaTime * (isWallRunning ? wallRunTiltSpeed : (isSliding ? slideTiltSpeed : (isGroundSliding ? groundSlideTiltSpeed : (isSwinging ? swingTiltSpeed : 5f)))));
+
+        if (ringCenterTimer > 0f)
+        {
+            ringCenterTimer -= Time.unscaledDeltaTime;
+            float centerT = 1f - Mathf.Exp(-ringCenterSpeed * Time.unscaledDeltaTime);
+            currentX = Mathf.LerpAngle(currentX, target.eulerAngles.y, centerT);
+        }
 
         // Aplica o alinhamento por último para prevalecer sobre a rotação
         // manual e sobre os demais modos de câmera durante o impacto.

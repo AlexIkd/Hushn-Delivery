@@ -177,6 +177,8 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [SerializeField] public int maxAirDashCharges = 1;
     public int airDashCharges = 0;
     private bool isDashing = false;
+    private bool ringAirDashRotationLocked = false;
+    private Vector3 ringAirDashDirection = Vector3.forward;
     private float airDashTimer = 0f;
 
     [Header("Air Dash Cooldowns")]
@@ -328,7 +330,17 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private Transform cachedTransform;
     private PlayerRailRide_SonicStyle_Spline railRide;
     private DynamicFollowCamera followCamera;
+    private Vector3 platformDisplacement;
     private bool wasGrindingLastFrame = false; // Rastreia o estado anterior para detectar saída do rail
+
+    /// <summary>
+    /// Recebe o deslocamento horizontal/vertical de uma plataforma móvel.
+    /// O valor é aplicado junto com o CharacterController.Move deste script.
+    /// </summary>
+    public void AddPlatformDisplacement(Vector3 displacement)
+    {
+        platformDisplacement += displacement;
+    }
 
 
     // ✅ NOVO: Unifica a lógica de saída do Rail (Manual ou Automática)
@@ -425,10 +437,13 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     [SerializeField] private float defaultHitMovementLockDuration = 0.3f;
     private float hitMovementLockTimer = 0f;
 
+    private float ringMovementLockTimer = 0f;
+
     // Atalho único para TODAS as verificações de bloqueio de movimento
     private bool deathMovementLock = false;
 
-    private bool IsMovementBlocked => animatorBusy || IsInDialogue() || hitMovementLockTimer > 0f || deathMovementLock;
+    private bool IsMovementBlocked => animatorBusy || IsInDialogue() ||
+        hitMovementLockTimer > 0f || ringMovementLockTimer > 0f || deathMovementLock;
 
     /// <summary>
     /// Indica se o controle está bloqueado especificamente pela reação de dano.
@@ -569,6 +584,9 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     {
         if (hitMovementLockTimer > 0f)
             hitMovementLockTimer -= Time.deltaTime;
+
+        if (ringMovementLockTimer > 0f)
+            ringMovementLockTimer -= Time.deltaTime;
 
         // ✅ NOVO: Detecta saída do rail para resetar pulos
         if (railRide != null)
@@ -859,7 +877,10 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
         // 5. Aplicação Final do Movimento Terrestre
         if (controller.enabled)
         {
-            controller.Move(moveDirection * Time.deltaTime);
+            Vector3 movementDelta = moveDirection * Time.deltaTime;
+            movementDelta += platformDisplacement;
+            platformDisplacement = Vector3.zero;
+            controller.Move(movementDelta);
         }
 
         // ✅ OTIMIZADO: Mover UpdateAnimator para o final do Update
@@ -2077,6 +2098,7 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
     private void StartAirDash()
     {
         isDashing = true;
+        ringAirDashRotationLocked = false;
         airDashTimer = airDashDuration;
         airDashCharges--;
 
@@ -2106,9 +2128,55 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
             Debug.Log($"💨 Dash Aéreo! Cargas restantes: {airDashCharges}");
     }
 
+    /// <summary>
+    /// Executa o air dash completo quando acionado por um anel.
+    /// Não consome uma carga normal do jogador. O anel pode solicitar
+    /// também a reprodução das partículas do air dash.
+    /// </summary>
+    public void LaunchAirDashFromRing(
+        Vector3 direction,
+        float force,
+        float verticalForce = 0f,
+        float movementLockDuration = 0.15f,
+        bool playParticles = false)
+    {
+        if (isGrounded || isWallRunning || isStomping || isSwinging)
+            return;
+
+        if (isGliding)
+            StopGlide();
+
+        direction.y = 0f;
+        if (direction.sqrMagnitude < 0.001f)
+            direction = cachedTransform.forward;
+        else
+            direction.Normalize();
+
+        isDashing = true;
+        ringAirDashRotationLocked = true;
+        ringAirDashDirection = direction;
+        airDashTimer = airDashDuration;
+        ringMovementLockTimer = Mathf.Max(0f, movementLockDuration);
+        currentSpeed = maxSpeed;
+        moveDirection = direction * Mathf.Max(0f, force);
+        moveDirection.y = verticalForce;
+
+        cachedTransform.rotation = Quaternion.LookRotation(
+            ringAirDashDirection,
+            Vector3.up
+        );
+
+        if (animator != null)
+            animator.SetTrigger("AirDash");
+
+        if (playParticles && enableAirDashParticles && airDashParticles != null)
+            StartAirDashParticles();
+    }
+
     private void StopAirDash()
     {
         isDashing = false;
+        ringAirDashRotationLocked = false;
 
         if (enableAirDashParticles && airDashParticles != null)
         {
@@ -2118,7 +2186,13 @@ public class PlayerMovement_FrontiersStyle : MonoBehaviour
 
     private void AirDashMovement()
     {
-        // O movimento do Dash já foi definido em StartAirDash()
+        if (ringAirDashRotationLocked)
+        {
+            cachedTransform.rotation = Quaternion.LookRotation(
+                ringAirDashDirection,
+                Vector3.up
+            );
+        }
     }
 
     // ======================================================

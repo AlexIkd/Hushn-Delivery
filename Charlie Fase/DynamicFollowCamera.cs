@@ -211,6 +211,14 @@ public class DynamicFollowCamera : MonoBehaviour
     [Tooltip("Velocidade do alinhamento horizontal atrás do jogador.")]
     [SerializeField, Min(0.01f)] private float damageAlignmentSpeed = 8f;
 
+	[Header("Mira Remota")]
+	[Tooltip("Velocidade com que a câmera se alinha ao ícone selecionado pelo relógio.")]
+	[SerializeField, Min(0.01f)] private float remoteAimRotationSpeed = 7f;
+	[Tooltip("FOV usado enquanto o relógio remoto estiver ativo.")]
+	[SerializeField, Min(1f)] private float remoteFOV = 48f;
+	[Tooltip("Velocidade da transição para o FOV do relógio remoto.")]
+	[SerializeField, Min(0.01f)] private float remoteFOVTransitionSpeed = 6f;
+
     [Header("Impacto de AirHit")]
     [SerializeField, Min(0f)] private float airDamageRecoilDistance = 0.16f;
     [Tooltip("Pitch do AirHit. Positivo inclina para baixo; negativo inclina para cima.")]
@@ -285,6 +293,9 @@ public class DynamicFollowCamera : MonoBehaviour
     private float currentDistance;
     private float currentX = 0.0f;
     private float currentY = 0.0f;
+    private bool remoteAimActive;
+    private Vector3 remoteAimPosition;
+    private bool remoteFOVActive;
     private float currentTilt = 0f;
     private float currentWallRunYaw = 0f; 
     private float collisionDistance;
@@ -380,6 +391,51 @@ public class DynamicFollowCamera : MonoBehaviour
         currentX = transform.eulerAngles.y;
         currentY = transform.eulerAngles.x;
         wasTransitioning = false;
+    }
+
+    /// <summary>
+    /// Puxa suavemente a rotação da câmera para um ponto de interação remoto.
+    /// </summary>
+    public void SetRemoteAimTarget(Vector3 worldPosition)
+    {
+        remoteAimPosition = worldPosition;
+        remoteAimActive = true;
+    }
+
+    public void ClearRemoteAimTarget()
+    {
+        remoteAimActive = false;
+    }
+
+    public void SetRemoteCameraMode(bool active)
+    {
+        remoteFOVActive = active;
+    }
+
+    /// <summary>
+    /// Estados em que o relógio remoto deve ser fechado para evitar conflito
+    /// com impactos e câmeras especiais de narrow passage ou swing.
+    /// </summary>
+    public bool IsRemoteInteractionBlocked
+    {
+        get
+        {
+            float normalHeightDuration = damageHeightTransitionIn +
+                                          damageHeightHoldDuration +
+                                          damageHeightTransitionOut;
+            float airHeightDuration = airDamageHeightTransitionIn +
+                                       airDamageHeightHoldDuration +
+                                       airDamageHeightTransitionOut;
+            float damageHeightDuration = Mathf.Max(normalHeightDuration, airHeightDuration);
+
+            bool damageActive = damageImpactTimer < damageImpactDurationCurrent ||
+                                 damageHeightTimer < damageHeightDuration ||
+                                 damagePitchTimer < damageImpactDurationCurrent;
+
+            return damageActive || isDeathCameraActive || isQTELocked ||
+                   IsPlayerInNarrow() || IsPlayerSwinging() ||
+                   IsPlayerSliding() || IsPlayerGroundSliding() || IsPlayerWarping();
+        }
     }
 
     public void TriggerRingHeightBoost()
@@ -642,7 +698,14 @@ public class DynamicFollowCamera : MonoBehaviour
             targetFOV = qteFOV;
         }
 
-        float fovSpeed = isInNarrow ? narrowEnterSpeed : (isOnBar ? barTransitionSpeed : narrowExitSpeed);
+        if (remoteFOVActive)
+        {
+            targetFOV = remoteFOV;
+        }
+
+        float fovSpeed = remoteFOVActive
+            ? remoteFOVTransitionSpeed
+            : (isInNarrow ? narrowEnterSpeed : (isOnBar ? barTransitionSpeed : narrowExitSpeed));
         currentFOV = Mathf.Lerp(currentFOV, targetFOV, Time.deltaTime * fovSpeed);
         if (cam != null) cam.fieldOfView = currentFOV;
 
@@ -923,6 +986,27 @@ public class DynamicFollowCamera : MonoBehaviour
                 target.eulerAngles.y,
                 1f - Mathf.Exp(-damageAlignmentSpeed * Time.unscaledDeltaTime)
             );
+        }
+
+        // A assistência do relógio é aplicada por último aos ângulos-base,
+        // sem substituir os efeitos de dano, inclinação ou colisão da câmera.
+        if (remoteAimActive)
+        {
+            // A mira precisa ser calculada a partir da posição real da lente.
+            // Usar o pivô do jogador fazia a câmera apontar acima do ícone,
+            // porque a lente está deslocada em altura e distância desse pivô.
+            Vector3 aimDirection = remoteAimPosition - transform.position;
+            if (aimDirection.sqrMagnitude > 0.0001f)
+            {
+                float targetYaw = Mathf.Atan2(aimDirection.x, aimDirection.z) * Mathf.Rad2Deg;
+                float horizontalDistance = new Vector2(aimDirection.x, aimDirection.z).magnitude;
+                float targetPitch = -Mathf.Atan2(aimDirection.y, horizontalDistance) * Mathf.Rad2Deg;
+                targetPitch = Mathf.Clamp(targetPitch, minYAngle, maxYAngle);
+
+                float alignT = 1f - Mathf.Exp(-remoteAimRotationSpeed * Time.unscaledDeltaTime);
+                currentX = Mathf.LerpAngle(currentX, targetYaw, alignT);
+                currentY = Mathf.Lerp(currentY, targetPitch, alignT);
+            }
         }
         
         UpdateDamageImpact();

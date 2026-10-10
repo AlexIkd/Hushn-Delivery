@@ -4,62 +4,86 @@ public class PlayerInteractor : MonoBehaviour
 {
     [Header("Settings")]
     [SerializeField] private float interactionRange = 2f;
-    [SerializeField] private float interactionHeightOffset = 1.0f; // Altura da linha de interação
+    [SerializeField] private float interactionHeightOffset = 1.0f;
     [SerializeField] private LayerMask interactableLayer;
     [SerializeField] private KeyCode interactKey = KeyCode.E;
 
+    [Header("Remote Interaction")]
+    [Tooltip("Referência ao sistema do relógio. Pode ser preenchida manualmente ou encontrada automaticamente.")]
+    [SerializeField] private RemoteLeverInteraction remoteInteraction;
+
     private IInteractable currentInteractable;
 
-    void Update()
+    private void Awake()
     {
+        if (remoteInteraction == null)
+            remoteInteraction = GetComponent<RemoteLeverInteraction>();
+
+        if (remoteInteraction == null)
+            remoteInteraction = FindFirstObjectByType<RemoteLeverInteraction>();
+    }
+
+    private void Update()
+    {
+        // O modo remoto usa a mesma tecla E para acionar alavancas à distância.
+        // Bloqueia completamente o interactor comum para evitar conflitos.
+        if (IsRemoteModeActive())
+        {
+            currentInteractable = null;
+            return;
+        }
+
         CheckForInteractable();
 
-        // Se o diálogo já está aberto, NÃO deixa o E registrar uma nova interação
-        // (isso evita reiniciar o diálogo — durante a conversa, o E só avança a fala no NPCDialogueManager)
+        // Se o diálogo já está aberto, NÃO deixa o E registrar uma nova interação.
         if (NPCDialogueManager.Instance != null && NPCDialogueManager.Instance.IsDialogueActive)
             return;
 
         if (currentInteractable != null && Input.GetKeyDown(interactKey))
-        {
             currentInteractable.Interact(gameObject);
-        }
+    }
+
+    private bool IsRemoteModeActive()
+    {
+        return remoteInteraction != null && remoteInteraction.IsRemoteModeActive;
     }
 
     private void CheckForInteractable()
     {
-        // Posição central da área de detecção
         Vector3 detectionCenter = transform.position + Vector3.up * interactionHeightOffset;
-        
-        // Detecta todos os colisores dentro da esfera (Área)
-        Collider[] colliders = Physics.OverlapSphere(detectionCenter, interactionRange, interactableLayer, QueryTriggerInteraction.Collide);
+
+        Collider[] colliders = Physics.OverlapSphere(
+            detectionCenter,
+            interactionRange,
+            interactableLayer,
+            QueryTriggerInteraction.Collide
+        );
 
         IInteractable closestInteractable = null;
         float closestDistance = float.MaxValue;
 
-        foreach (var col in colliders)
+        foreach (Collider col in colliders)
         {
-            // Ignora o próprio jogador
-            if (col.gameObject == gameObject) continue;
+            if (col.gameObject == gameObject)
+                continue;
 
             IInteractable interactable = col.GetComponentInParent<IInteractable>();
-            if (interactable != null)
+            if (interactable == null)
+                continue;
+
+            float dist = Vector3.Distance(detectionCenter, col.transform.position);
+            if (dist < closestDistance)
             {
-                // Encontra o objeto mais próximo na área
-                float dist = Vector3.Distance(detectionCenter, col.transform.position);
-                if (dist < closestDistance)
-                {
-                    closestDistance = dist;
-                    closestInteractable = interactable;
-                }
+                closestDistance = dist;
+                closestInteractable = interactable;
             }
         }
 
         if (closestInteractable != null)
         {
             if (currentInteractable != closestInteractable)
-            {
                 Debug.Log("<color=cyan>Interação:</color> Objeto detectado na área!");
-            }
+
             currentInteractable = closestInteractable;
         }
         else
@@ -68,7 +92,6 @@ public class PlayerInteractor : MonoBehaviour
         }
     }
 
-    // Desenha a área de detecção no Editor para facilitar o ajuste
     private void OnDrawGizmosSelected()
     {
         Gizmos.color = Color.cyan;
@@ -76,9 +99,8 @@ public class PlayerInteractor : MonoBehaviour
         Gizmos.DrawWireSphere(detectionCenter, interactionRange);
     }
 
-    // Para uso na UI
     public string GetCurrentInteractText()
     {
-        return currentInteractable?.GetInteractText() ?? "";
+        return currentInteractable?.GetInteractText() ?? string.Empty;
     }
 }
